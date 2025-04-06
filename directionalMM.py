@@ -1,12 +1,8 @@
-from typing import Dict, List,Any
 import json
-from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+from typing import Dict, List, Any
+from datamodel import Order, OrderDepth, TradingState, Symbol, Listing, Trade, Observation, ProsperityEncoder
+import numpy as np
 
-
-# =======================
-# NOTE: THIS IS BOILERPLATE
-# region boilerplate
-# =======================
 class Logger:
     def __init__(self) -> None:
         self.logs = ""
@@ -123,63 +119,21 @@ class Logger:
 
 logger = Logger()
 
-# =======================
-# NOTE: BOILERPLATE END
-# endregion
-# =======================
-
 class Trader:
     def __init__(self):
         self.mid_price_history = {}
 
-    def compute_fair_price(self, product: str, mid_price: float, window: int = 20) -> float:
-        """
-        Compute rolling average fair price.
-        """
-        history = self.mid_price_history.get(product, [])
-        history.append(mid_price)
-        if len(history) > window:
-            history.pop(0)
-        self.mid_price_history[product] = history
-        return sum(history) / len(history)
-
-    def adjust_order_size(self, position: int, level_offset: int, max_position: int = 50, base_size: int = 10) -> int:
-        """
-        Scale order size based on inventory and distance from fair value.
-        """
-        size = base_size * (1 - abs(position / max_position))
-        decay = max(0.5, 1.0 - 0.2 * (level_offset - 1))  # Smaller size further out
-        return max(1, int(size * decay))
-
-    def place_ladder_orders(self, product: str, fair_price: float, position: int, max_position: int = 50) -> List[Order]:
-        """
-        Place multiple buy/sell orders at increasing distance from fair price.
-        """
-        orders = []
-        base_size = 10
-        max_levels = 3  # number of buy/sell levels
-
-        # BUY ladder (fair - 2, -3, -4, ...)
-        if position < max_position:
-            for level in range(1, max_levels + 1):
-                price = int(fair_price - (level + 1))
-                size = self.adjust_order_size(position, level, max_position, base_size)
-                orders.append(Order(product, price, size))
-
-        # SELL ladder (fair + 2, +3, +4, ...)
-        if position > -max_position:
-            for level in range(1, max_levels + 1):
-                price = int(fair_price + (level + 1))
-                size = self.adjust_order_size(position, level, max_position, base_size)
-                orders.append(Order(product, price, -size))
-
-        return orders
-
-    def run(self, state: TradingState) -> Dict[str, List[Order]]:
+    def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result = {}
+        conversions = 0
+        trader_data = ""
+        max_pos = 50
 
-        for product in ["KELP", "RAINFOREST_RESIN"]:
-            order_depth: OrderDepth = state.order_depths[product]
+        for product in state.order_depths:
+            order_depth = state.order_depths[product]
+            position = state.position.get(product, 0)
+            orders: List[Order] = []
+
             if not order_depth.buy_orders or not order_depth.sell_orders:
                 result[product] = []
                 continue
@@ -187,16 +141,53 @@ class Trader:
             best_bid = max(order_depth.buy_orders)
             best_ask = min(order_depth.sell_orders)
             mid_price = (best_bid + best_ask) / 2
-            position = state.position.get(product, 0)
 
-            fair_price = self.compute_fair_price(product, mid_price)
-            orders = self.place_ladder_orders(product, fair_price, position)
+            # === Update mid-price history ===
+            history = self.mid_price_history.get(product, [])
+            history.append(mid_price)
+            if len(history) > 15:
+                history.pop(0)
+            self.mid_price_history[product] = history
+
+            # === RAINFOREST_RESIN: Mean-Reversion Laddering ===
+            if product == "RAINFOREST_RESIN":
+                fair_price = sum(history) / len(history)
+                for level in range(1, 4):
+                    offset = 2 + (level - 1)
+                    size = max(1, int(10 * (1 - abs(position / max_pos))))
+                    if position < max_pos:
+                        orders.append(Order(product, int(fair_price - offset), size))
+                    if position > -max_pos:
+                        orders.append(Order(product, int(fair_price + offset), -size))
+
+            # === KELP: Directional Market Making ===
+            elif product == "KELP":
+                fair_price = sum(history) / len(history)
+                momentum = 0
+                if len(history) >= 5:
+                    momentum = mid_price - sum(history[:-1]) / len(history[:-1])
+
+                # Adjust quoting offsets based on momentum
+                base_offset = 2
+                if momentum > 0.5:
+                    bid_offset = base_offset + 1
+                    ask_offset = base_offset - 1
+                elif momentum < -0.5:
+                    bid_offset = base_offset - 1
+                    ask_offset = base_offset + 1
+                else:
+                    bid_offset = ask_offset = base_offset
+
+                # Position-aware size
+                size = max(1, int(10 * (1 - abs(position / max_pos))))
+
+                # Place skewed passive orders
+                if position < max_pos:
+                    orders.append(Order(product, int(fair_price - bid_offset), size))
+                if position > -max_pos:
+                    orders.append(Order(product, int(fair_price + ask_offset), -size))
 
             result[product] = orders
 
-        traderData = "MM_MeanReversion_Ladder"
-        conversions = 1
-
-
-        logger.flush(state, result, conversions, traderData) #this is necessary for visualiser
-        return result, conversions, traderData
+        logger.flush(state, result, conversions, trader_data)
+        return result, conversions, trader_data
