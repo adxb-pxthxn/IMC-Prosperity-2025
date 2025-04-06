@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from datamodel import Order, OrderDepth, TradingState, Symbol, Listing, Trade, Observation, ProsperityEncoder
 import numpy as np
 
@@ -131,16 +131,31 @@ class Trader:
         "KELP_PRICE_DEV_CANCEL": 2,
         "KELP_LADDER_LEVELS": 4,
         "KELP_TAKE_THRESHOLD": 1.0,
-        "KELP_CLEAR_THRESHOLD": 40,
+        "KELP_CLEAR_THRESHOLD": 45,
         "KELP_CLEAR_SIZE": 10,
-        "RESIN_TIGHT_MM_OFFSET": 1,
-        "RESIN_TIGHT_MM_SIZE": 3,
+        "EMA_FAST_ALPHA": 0.6,
+        "EMA_SLOW_ALPHA": 0.3,
+        "EMA_FAST_WINDOW": 3,
+        "EMA_SLOW_WINDOW": 10,
+        "CLEAR_SLOPE_DIVISOR": 1.0
     }
 
     def __init__(self):
-        self.mid_price_history = {}
+        self.mid_price_history: Dict[Symbol, List[float]] = {}
+        self.ema_fast: Dict[Symbol, float] = {}
+        self.ema_slow: Dict[Symbol, float] = {}
 
-    def weighted_moving_average(self, data: list[float]) -> float:
+    def update_ema(self, symbol: Symbol, price: float, alpha: float, which: str):
+        if which == "fast":
+            prev = self.ema_fast.get(symbol, price)
+            self.ema_fast[symbol] = alpha * price + (1 - alpha) * prev
+            return self.ema_fast[symbol]
+        else:
+            prev = self.ema_slow.get(symbol, price)
+            self.ema_slow[symbol] = alpha * price + (1 - alpha) * prev
+            return self.ema_slow[symbol]
+
+    def weighted_moving_average(self, data: List[float]) -> float:
         weights = list(range(1, len(data) + 1))
         return sum(x * w for x, w in zip(data, weights)) / sum(weights)
 
@@ -152,16 +167,15 @@ class Trader:
                 return depths[i]
         return depths[-1]
 
-    def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
+    def run(self, state: TradingState) -> Tuple[Dict[Symbol, List[Order]], int, str]:
         result = {}
         conversions = 0
         trader_data = ""
         max_pos = self.PARAMS["MAX_POSITION"]
 
-        for product in state.order_depths:
-            order_depth = state.order_depths[product]
+        for product, order_depth in state.order_depths.items():
             position = state.position.get(product, 0)
-            orders: list[Order] = []
+            orders: List[Order] = []
 
             if not order_depth.buy_orders or not order_depth.sell_orders:
                 result[product] = []
@@ -172,19 +186,20 @@ class Trader:
             spread = best_ask - best_bid
             mid_price = (best_bid + best_ask) / 2
 
+            # Update mid price history
             history = self.mid_price_history.get(product, [])
             history.append(mid_price)
-            if len(history) > 20:
+            if len(history) > 50:
                 history.pop(0)
             self.mid_price_history[product] = history
 
+            # === RESIN Logic ===
             if product == "RAINFOREST_RESIN":
                 fair_price = self.weighted_moving_average(history)
                 volatility = np.std(history[-self.PARAMS["RESIN_WINDOW"]:])
                 ladder_depth = self.get_ladder_depth(volatility)
                 base_offset = self.PARAMS["RESIN_LADDER_BASE_OFFSET"]
 
-                # Ladder orders
                 for level in range(1, ladder_depth + 1):
                     offset = base_offset + (level - 1)
                     size = max(1, int(10 * (1 - abs(position / max_pos))))
@@ -193,53 +208,61 @@ class Trader:
                     if position > -max_pos:
                         orders.append(Order(product, int(fair_price + offset), -size))
 
-                # Micro market making at ±1 offset
-                tight_offset = self.PARAMS["RESIN_TIGHT_MM_OFFSET"]
-                tight_size = self.PARAMS["RESIN_TIGHT_MM_SIZE"]
                 if spread >= 2:
                     if position < max_pos:
-                        orders.append(Order(product, int(fair_price - tight_offset), tight_size))
+                        orders.append(Order(product, int(fair_price - 1), 3))
                     if position > -max_pos:
-                        orders.append(Order(product, int(fair_price + tight_offset), -tight_size))
+                        orders.append(Order(product, int(fair_price + 1), -3))
 
+            # === KELP Logic with Optimized EMA + Blended Fair Price ===
             elif product == "KELP":
-                if len(history) < 6:
+                if len(history) < max(self.PARAMS["EMA_SLOW_WINDOW"], self.PARAMS["EMA_FAST_WINDOW"]):
                     result[product] = []
                     continue
 
-                wma_now = self.weighted_moving_average(history[-6:])
-                wma_prev = self.weighted_moving_average(history[-7:-1])
-                predicted_price = wma_now + (wma_now - wma_prev)
-                slope = wma_now - wma_prev
+                ema_fast = self.update_ema(product, mid_price, self.PARAMS["EMA_FAST_ALPHA"], "fast")
+                ema_slow = self.update_ema(product, mid_price, self.PARAMS["EMA_SLOW_ALPHA"], "slow")
 
+                # Blended fair price: more weight to fast for early movement
+                fair_price = 0.6 * ema_fast + 0.4 * ema_slow
+                slope = ema_fast - ema_slow
                 volatility = np.std(history[-10:])
-                if volatility > self.PARAMS["KELP_VOL_CANCEL_THRESHOLD"] or abs(mid_price - predicted_price) > self.PARAMS["KELP_PRICE_DEV_CANCEL"]:
+                momentum_score = slope / volatility if volatility > 0 else 0
+
+                if volatility > self.PARAMS["KELP_VOL_CANCEL_THRESHOLD"] or abs(mid_price - fair_price) > self.PARAMS["KELP_PRICE_DEV_CANCEL"]:
                     result[product] = []
                     continue
 
+                # Market Making
                 levels = self.PARAMS["KELP_LADDER_LEVELS"]
                 base_offset = 1 if spread <= 3 else 2
+                size_multiplier = 1 + min(1.5, abs(momentum_score))
+
                 for level in range(1, levels + 1):
                     offset = base_offset + level - 1
-                    size = max(1, int(10 * (1 - abs(position / max_pos))))
+                    size = max(1, int(8 * size_multiplier * (1 - abs(position / max_pos))))
                     if position < max_pos:
-                        orders.append(Order(product, int(predicted_price - offset), size))
+                        orders.append(Order(product, int(fair_price - offset), size))
                     if position > -max_pos:
-                        orders.append(Order(product, int(predicted_price + offset), -size))
+                        orders.append(Order(product, int(fair_price + offset), -size))
 
-                take_thresh = self.PARAMS["KELP_TAKE_THRESHOLD"]
-                take_size = max(1, int(5 * (1 - abs(position / max_pos))))
-                if position < max_pos and predicted_price > best_ask + take_thresh:
-                    orders.append(Order(product, best_ask, take_size))
-                if position > -max_pos and predicted_price < best_bid - take_thresh:
-                    orders.append(Order(product, best_bid, -take_size))
+                # Market Taking
+                if abs(momentum_score) > 1:
+                    take_size = max(1, int(4 * size_multiplier * (1 - abs(position / max_pos))))
+                    if position < max_pos and fair_price > best_ask + self.PARAMS["KELP_TAKE_THRESHOLD"]:
+                        orders.append(Order(product, best_ask, take_size))
+                    if position > -max_pos and fair_price < best_bid - self.PARAMS["KELP_TAKE_THRESHOLD"]:
+                        orders.append(Order(product, best_bid, -take_size))
 
-                if position >= self.PARAMS["KELP_CLEAR_THRESHOLD"] and slope < 0:
-                    orders.append(Order(product, best_bid, -self.PARAMS["KELP_CLEAR_SIZE"]))
-                elif position <= -self.PARAMS["KELP_CLEAR_THRESHOLD"] and slope > 0:
-                    orders.append(Order(product, best_ask, self.PARAMS["KELP_CLEAR_SIZE"]))
+                # Smart Aggressive Clearing
+                if abs(position) >= self.PARAMS["KELP_CLEAR_THRESHOLD"]:
+                    clear_strength = min(1.0, abs(slope) / self.PARAMS["CLEAR_SLOPE_DIVISOR"])
+                    clear_size = max(1, int(clear_strength * self.PARAMS["KELP_CLEAR_SIZE"]))
+                    if position > 0 and slope < 0 and best_bid >= fair_price - 2:
+                        orders.append(Order(product, best_bid, -clear_size))
+                    elif position < 0 and slope > 0 and best_ask <= fair_price + 2:
+                        orders.append(Order(product, best_ask, clear_size))
 
             result[product] = orders
 
-        logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
