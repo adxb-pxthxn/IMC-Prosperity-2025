@@ -118,6 +118,9 @@ class Logger:
 
 
 logger = Logger()
+from typing import Dict, List, Tuple
+from datamodel import Order, OrderDepth, TradingState, Symbol
+import numpy as np
 
 class Trader:
     PARAMS = {
@@ -126,8 +129,7 @@ class Trader:
         "RESIN_VOL_THRESHOLDS": [1.0, 2.0, 3.0],
         "RESIN_LADDER_DEPTHS": [2, 3, 4, 5],
         "RESIN_WINDOW": 10,
-        "RESIN_WMA_WINDOW": 20,
-        "KELP_VOL_CANCEL_THRESHOLD": 3.0,
+        "KELP_VOL_CANCEL_THRESHOLD": 4.0,
         "KELP_PRICE_DEV_CANCEL": 2,
         "KELP_LADDER_LEVELS": 4,
         "KELP_TAKE_THRESHOLD": 1.0,
@@ -137,7 +139,9 @@ class Trader:
         "EMA_SLOW_ALPHA": 0.3,
         "EMA_FAST_WINDOW": 3,
         "EMA_SLOW_WINDOW": 10,
-        "CLEAR_SLOPE_DIVISOR": 1.0
+        "CLEAR_SLOPE_DIVISOR": 1.0,
+        "MOMENTUM_THRESHOLD": 1.0,
+        "MOMENTUM_BASE_SIZE": 6
     }
 
     def __init__(self):
@@ -186,14 +190,12 @@ class Trader:
             spread = best_ask - best_bid
             mid_price = (best_bid + best_ask) / 2
 
-            # Update mid price history
             history = self.mid_price_history.get(product, [])
             history.append(mid_price)
             if len(history) > 50:
                 history.pop(0)
             self.mid_price_history[product] = history
 
-            # === RESIN Logic ===
             if product == "RAINFOREST_RESIN":
                 fair_price = self.weighted_moving_average(history)
                 volatility = np.std(history[-self.PARAMS["RESIN_WINDOW"]:])
@@ -214,26 +216,33 @@ class Trader:
                     if position > -max_pos:
                         orders.append(Order(product, int(fair_price + 1), -3))
 
-            # === KELP Logic with Optimized EMA + Blended Fair Price ===
             elif product == "KELP":
-                if len(history) < max(self.PARAMS["EMA_SLOW_WINDOW"], self.PARAMS["EMA_FAST_WINDOW"]):
+                if len(history) < max(self.PARAMS["EMA_SLOW_WINDOW"], self.PARAMS["EMA_FAST_WINDOW"], 10):
                     result[product] = []
                     continue
 
+                # --- Core Signals ---
                 ema_fast = self.update_ema(product, mid_price, self.PARAMS["EMA_FAST_ALPHA"], "fast")
                 ema_slow = self.update_ema(product, mid_price, self.PARAMS["EMA_SLOW_ALPHA"], "slow")
-
-                # Blended fair price: more weight to fast for early movement
                 fair_price = 0.6 * ema_fast + 0.4 * ema_slow
                 slope = ema_fast - ema_slow
                 volatility = np.std(history[-10:])
                 momentum_score = slope / volatility if volatility > 0 else 0
 
+                # --- New Rolling Indicators ---
+                sma_short = sum(history[-3:]) / 3 if len(history) >= 3 else mid_price
+                mean = np.mean(history[-10:])
+                std_dev = np.std(history[-10:])
+                z_score = (mid_price - mean) / std_dev if std_dev > 0 else 0
+                upper_band = ema_slow + 2 * volatility
+                lower_band = ema_slow - 2 * volatility
+
+                # --- Cancel check ---
                 if volatility > self.PARAMS["KELP_VOL_CANCEL_THRESHOLD"] or abs(mid_price - fair_price) > self.PARAMS["KELP_PRICE_DEV_CANCEL"]:
                     result[product] = []
                     continue
 
-                # Market Making
+                # --- Market Making ---
                 levels = self.PARAMS["KELP_LADDER_LEVELS"]
                 base_offset = 1 if spread <= 3 else 2
                 size_multiplier = 1 + min(1.5, abs(momentum_score))
@@ -246,7 +255,7 @@ class Trader:
                     if position > -max_pos:
                         orders.append(Order(product, int(fair_price + offset), -size))
 
-                # Market Taking
+                # --- Market Taking ---
                 if abs(momentum_score) > 1:
                     take_size = max(1, int(4 * size_multiplier * (1 - abs(position / max_pos))))
                     if position < max_pos and fair_price > best_ask + self.PARAMS["KELP_TAKE_THRESHOLD"]:
@@ -254,7 +263,7 @@ class Trader:
                     if position > -max_pos and fair_price < best_bid - self.PARAMS["KELP_TAKE_THRESHOLD"]:
                         orders.append(Order(product, best_bid, -take_size))
 
-                # Smart Aggressive Clearing
+                # --- Smart Clearing ---
                 if abs(position) >= self.PARAMS["KELP_CLEAR_THRESHOLD"]:
                     clear_strength = min(1.0, abs(slope) / self.PARAMS["CLEAR_SLOPE_DIVISOR"])
                     clear_size = max(1, int(clear_strength * self.PARAMS["KELP_CLEAR_SIZE"]))
@@ -262,6 +271,21 @@ class Trader:
                         orders.append(Order(product, best_bid, -clear_size))
                     elif position < 0 and slope > 0 and best_ask <= fair_price + 2:
                         orders.append(Order(product, best_ask, clear_size))
+
+                # --- Aggressive Momentum Bot w/ Confirmation ---
+                threshold = self.PARAMS["MOMENTUM_THRESHOLD"]
+                base_size = self.PARAMS["MOMENTUM_BASE_SIZE"]
+                momentum_size = max(base_size, int(base_size * abs(momentum_score)))
+
+                can_buy = position < max_pos
+                can_sell = position > -max_pos
+                confirmed = abs(z_score) < 2 and (sma_short - ema_fast) * momentum_score > 0
+
+                if abs(momentum_score) > threshold and confirmed:
+                    if momentum_score > 0 and can_buy and fair_price > upper_band:
+                        orders.append(Order(product, best_ask + 1, momentum_size))  # breakout long
+                    elif momentum_score < 0 and can_sell and fair_price < lower_band:
+                        orders.append(Order(product, best_bid - 1, -momentum_size))  # breakout short
 
             result[product] = orders
 
