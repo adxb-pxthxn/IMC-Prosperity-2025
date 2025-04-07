@@ -90,6 +90,7 @@ def print_day_summary(result: BacktestResult) -> None:
 
     print(*reversed(product_lines), sep="\n")
     print(f"Total profit: {total_profit:,.0f}")
+    return total_profit
 
 
 def merge_results(
