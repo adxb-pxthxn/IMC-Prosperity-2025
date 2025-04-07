@@ -1,6 +1,8 @@
 from typing import Dict, List,Any
 import json
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+import math
+import numpy as np
 
 
 # =======================
@@ -129,13 +131,25 @@ logger = Logger()
 # =======================
 
 class Trader:
+    PARAMS = {
+        "MAX_POSITION": 50,
+        "BOOK_WEIGHT_EMA_ALPHA": 0.3,
+        "POSITION_BIAS_COEFF": 0.01,
+        "KELP_LADDER_DEPTH": 6,
+        "KELP_BASE_SIZE": 8,
+        "KELP_FILLER_SIZE": 2,
+        "KELP_FILLER_SPREAD": 3,
+        "RESIN_LADDER_DEPTH": 8,
+        "RESIN_BASE_SIZE": 10,
+        "RESIN_FILLER_SIZE": 2,
+        "RESIN_FILLER_SPREAD": 4,
+        "REGRESSION_WINDOW": 8,
+        "MAX_REGRESSION_SHIFT": 1.5,
+    }
     def __init__(self):
         self.mid_price_history = {}
 
-    def compute_fair_price(self, product: str, mid_price: float, window: int = 20) -> float:
-        """
-        Compute rolling average fair price.
-        """
+    def track_mid_price(self, product: str, mid_price: float, window: int) -> float:
         history = self.mid_price_history.get(product, [])
         history.append(mid_price)
         if len(history) > window:
@@ -143,56 +157,95 @@ class Trader:
         self.mid_price_history[product] = history
         return sum(history) / len(history)
 
-    def adjust_order_size(self, position: int, level_offset: int, max_position: int = 50, base_size: int = 10) -> int:
-        """
-        Scale order size based on inventory and distance from fair value.
-        """
+    def adjust_order_size(self, position: int, level_offset: int = 1, max_position: int = 50, base_size: int = 10) -> int:
         size = base_size * (1 - abs(position / max_position))
-        decay = max(0.5, 1.0 - 0.2 * (level_offset - 1))  # Smaller size further out
+        decay = max(0.5, 1.0 - 0.3 * (level_offset - 1))
         return max(1, int(size * decay))
 
-    def place_ladder_orders(self, product: str, fair_price: float, position: int, max_position: int = 50) -> List[Order]:
+    def place_ladder_orders(self, product: str, fair_price: float, position: int, config: Dict) -> List[Order]:
         """
-        Place multiple buy/sell orders at increasing distance from fair price.
+        Place ladder orders using given config: {start_offset, levels, max_position, base_size}
         """
         orders = []
-        base_size = 10
-        max_levels = 3  # number of buy/sell levels
+        start_offset = config["start_offset"]
+        levels = config["levels"]
+        max_pos = config["max_position"]
+        base_size = config["base_size"]
 
-        # BUY ladder (fair - 2, -3, -4, ...)
-        if position < max_position:
-            for level in range(1, max_levels + 1):
-                price = int(fair_price - (level + 1))
-                size = self.adjust_order_size(position, level, max_position, base_size)
-                orders.append(Order(product, price, size))
+        for level in range(1, levels + 1):
+            offset = start_offset + level - 1
 
-        # SELL ladder (fair + 2, +3, +4, ...)
-        if position > -max_position:
-            for level in range(1, max_levels + 1):
-                price = int(fair_price + (level + 1))
-                size = self.adjust_order_size(position, level, max_position, base_size)
-                orders.append(Order(product, price, -size))
+            if position < max_pos:
+                buy_price = int(fair_price - offset)
+                size = self.adjust_order_size(position, level, max_pos, base_size)
+                orders.append(Order(product, buy_price, size))
+
+            if position > -max_pos:
+                sell_price = int(fair_price + offset)
+                size = self.adjust_order_size(position, level, max_pos, base_size)
+                orders.append(Order(product, sell_price, -size))
 
         return orders
+    def rain_order(self,order_depth:OrderDepth,fair=10006,position=0,position_limit=50):
+
+        orders=[]
+
+        buy_volume=0
+        sell_volume=0
+
+
+        sell_orders=order_depth.sell_orders
+        buy_orders=order_depth.buy_orders
+        best_ask_fair=min([p for p in sell_orders.keys() if p>fair+1 ])
+        best_bid_fair=max([p for p in buy_orders.keys() if p<fair+1 ])
+
+        if sell_orders:
+            best_ask=min(sell_orders.keys())
+            best_ask_ammount=-sell_orders[best_ask]
+            if best_ask<fair:
+                quant=min(best_ask_ammount,position_limit-position)
+                if quant>0:
+                    orders.append(Order("RAINFOREST_RESIN",best_ask,quant))
+                    buy_volume+=quant
+        if buy_orders:
+            best_bid = max(buy_orders.keys())
+            best_bid_amount = buy_orders[best_bid]
+            if best_bid > fair:
+                quant = min(best_bid_amount, position_limit + position)
+                if quant > 0:
+                    orders.append(Order("RAINFOREST_RESIN", best_bid, -quant))
+                    sell_volume += quant
+        
+        buy_quant=position_limit-(position+buy_volume)
+        if buy_quant>0:
+            orders.append(Order("RAINFOREST_RESIN",  best_bid_fair+ 1, buy_quant))
+
+
+        sell_quant=position_limit+(position-sell_volume)
+        if sell_quant>0:
+            orders.append(Order("RAINFOREST_RESIN", best_ask_fair - 1, -sell_quant))
+
+
+        return orders
+
 
     def run(self, state: TradingState) -> Dict[str, List[Order]]:
         result = {}
 
-        for product in ["KELP", "RAINFOREST_RESIN"]:
-            order_depth: OrderDepth = state.order_depths[product]
-            if not order_depth.buy_orders or not order_depth.sell_orders:
-                result[product] = []
-                continue
 
-            best_bid = max(order_depth.buy_orders)
-            best_ask = min(order_depth.sell_orders)
-            mid_price = (best_bid + best_ask) / 2
-            position = state.position.get(product, 0)
+        if 'RAINFOREST_RESIN' in state.order_depths:
+            rain_position = state.position.get('RAINFOREST_RESIN',0)
+            rain_orders=self.rain_order(state.order_depths['RAINFOREST_RESIN'],position=rain_position)
+            result['RAINFOREST_RESIN']=rain_orders
+        
+        # if 'KELP' in state.order_depths:
+            
+        #     kelp_position = state.position.get('RAINFOREST_RESIN',0)
+        #     fair_price = self.track_mid_price('KELP', ((max(state.order_depths.buy_orders.keys())+min(state.order_depths.sell_orders.keys()))/2), window=10)
+        #     rain_orders=self.kelp_order(state.order_depths['RAINFOREST_RESIN'],fair_priceposition=kelp_position)
+        #     result['KELP']=rain_orders
 
-            fair_price = self.compute_fair_price(product, mid_price)
-            orders = self.place_ladder_orders(product, fair_price, position)
 
-            result[product] = orders
 
         traderData = "MM_MeanReversion_Ladder"
         conversions = 1
