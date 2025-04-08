@@ -47,7 +47,7 @@ def cli(
     show_progress_bars = not no_progress and not print_output
     
     # windows = [i*10 for i in range(1,100)]
-    hps = [i/100 for i in range(1,100)] 
+    hps = [i/100 for i in range(1,2)] 
     best = [-1,-1] # profit, window
     for hp in hps:
         results = []
@@ -56,7 +56,7 @@ def cli(
             reload(trader_module)
 
             result = run_backtest(
-                trader_module.Trader(hyperparam = hp),
+                trader_module.Trader(),
                 file_reader,
                 round_num,
                 day_num,
@@ -87,7 +87,7 @@ def cli(
         reload(trader_module)
 
         result = run_backtest(
-            trader_module.Trader(hyperparam = hp),
+            trader_module.Trader(),
             file_reader,
             round_num,
             day_num,
