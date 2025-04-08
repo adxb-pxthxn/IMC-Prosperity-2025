@@ -256,6 +256,8 @@ class Trader:
         result = {}
 
         for product in state.order_depths:
+            if product != "SQUID_INK":
+                continue
             order_depth = state.order_depths[product]
             if not order_depth.buy_orders or not order_depth.sell_orders:
                 result[product] = []
@@ -273,14 +275,13 @@ class Trader:
             elif product == "KELP":
                 orders = self.kelp_liquidity_sniper(product, order_depth, position)
             if product == "SQUID_INK":
-                print("here")
-                self.track_mid_price(product, mid_price, window=20) # don't need the return value, just need it saved for MACD
+                self.track_mid_price(product, mid_price, window=13)
                 orders = self.squid_ink_momentum(product, order_depth, position)
 
 
             result[product] = orders
 
-        traderData = "KELP_Sniper_RESIN_Ladder_SQUID_momentum"
+        traderData = "KELP_Sniper_RESIN_Ladder_INK_Sniper"
         conversions = 1
 
         logger.flush(state, result, conversions, traderData) #this is necessary for visualiser

@@ -187,7 +187,7 @@ class Trader:
 
         return orders
     def rain_order(self,order_depth:OrderDepth,fair=10000,position=0,position_limit=50):
-
+        delta = 1
         orders=[]
 
         buy_volume=0
@@ -197,14 +197,14 @@ class Trader:
         sell_orders=order_depth.sell_orders
         buy_orders=order_depth.buy_orders
         try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+1], default=fair+2)
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+delta], default=fair+2)
         except ValueError:
-            best_ask_fair = fair+1
+            best_ask_fair = fair+delta
             
         try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair+1], default=fair-2)
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair+delta], default=fair-2)
         except ValueError:
-            best_bid_fair = fair-1
+            best_bid_fair = fair-delta
 
         if sell_orders:
             best_ask=min(sell_orders.keys())
