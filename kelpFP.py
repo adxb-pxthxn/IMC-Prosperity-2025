@@ -183,6 +183,7 @@ class Trader:
             spread = best_ask - best_bid
             mid_price = (best_bid + best_ask) / 2
 
+            
             history = self.mid_price_history.get(product, [])
             history.append(mid_price)
             if len(history) > 50:
