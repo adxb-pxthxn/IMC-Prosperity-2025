@@ -20,13 +20,13 @@ DEFAULT_PRICES = {
 
 class Trader:
 
-    def __init__(self, hyperparam =0.11) -> None:
+    def __init__(self, hyperparam =0.05) -> None:
         
         print("Initializing Trader...")
 
         self.position_limit = {
-            RAINFOREST_RESIN : 20,
-            KELP : 20,
+            RAINFOREST_RESIN : 50,
+            KELP : 50,
         }
 
         self.round = 0
