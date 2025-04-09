@@ -1,4 +1,4 @@
-from typing import Dict, List,Any
+from typing import Dict, List, Any
 import json
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
 import math
@@ -125,6 +125,7 @@ class Logger:
 
 logger = Logger()
 
+
 # =======================
 # NOTE: BOILERPLATE END
 # endregion
@@ -146,74 +147,37 @@ class Trader:
         "REGRESSION_WINDOW": 8,
         "MAX_REGRESSION_SHIFT": 1.5,
     }
+
     def __init__(self):
         self.mid_price_history = {}
 
-    def track_mid_price(self, product: str, mid_price: float, window: int) -> float:
-        history = self.mid_price_history.get(product, [])
-        history.append(mid_price)
-        if len(history) > window:
-            history.pop(0)
-        self.mid_price_history[product] = history
-        return sum(history) / len(history)
+    def rain_order(self, order_depth: OrderDepth, fair=10000, position=0, position_limit=50):
 
-    def adjust_order_size(self, position: int, level_offset: int = 1, max_position: int = 50, base_size: int = 10) -> int:
-        size = base_size * (1 - abs(position / max_position))
-        decay = max(0.5, 1.0 - 0.3 * (level_offset - 1))
-        return max(1, int(size * decay))
-
-    def place_ladder_orders(self, product: str, fair_price: float, position: int, config: Dict) -> List[Order]:
-        """
-        Place ladder orders using given config: {start_offset, levels, max_position, base_size}
-        """
         orders = []
-        start_offset = config["start_offset"]
-        levels = config["levels"]
-        max_pos = config["max_position"]
-        base_size = config["base_size"]
 
-        for level in range(1, levels + 1):
-            offset = start_offset + level - 1
+        buy_volume = 0
+        sell_volume = 0
 
-            if position < max_pos:
-                buy_price = int(fair_price - offset)
-                size = self.adjust_order_size(position, level, max_pos, base_size)
-                orders.append(Order(product, buy_price, size))
-
-            if position > -max_pos:
-                sell_price = int(fair_price + offset)
-                size = self.adjust_order_size(position, level, max_pos, base_size)
-                orders.append(Order(product, sell_price, -size))
-
-        return orders
-    def rain_order(self,order_depth:OrderDepth,fair=10000,position=0,position_limit=50):
-
-        orders=[]
-
-        buy_volume=0
-        sell_volume=0
-
-
-        sell_orders=order_depth.sell_orders
-        buy_orders=order_depth.buy_orders
+        sell_orders = order_depth.sell_orders
+        buy_orders = order_depth.buy_orders
         try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+1], default=fair+2)
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair + 1], default=fair + 2)
         except ValueError:
-            best_ask_fair = fair+1
-            
+            best_ask_fair = fair + 1
+
         try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair+1], default=fair-2)
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair + 1], default=fair - 2)
         except ValueError:
-            best_bid_fair = fair-1
+            best_bid_fair = fair - 1
 
         if sell_orders:
-            best_ask=min(sell_orders.keys())
-            best_ask_ammount=-sell_orders[best_ask]
-            if best_ask<fair:
-                quant=min(best_ask_ammount,position_limit-position)
-                if quant>0:
-                    orders.append(Order("RAINFOREST_RESIN",best_ask,quant))
-                    buy_volume+=quant
+            best_ask = min(sell_orders.keys())
+            best_ask_ammount = -sell_orders[best_ask]
+            if best_ask < fair:
+                quant = min(best_ask_ammount, position_limit - position)
+                if quant > 0:
+                    orders.append(Order("RAINFOREST_RESIN", best_ask, quant))
+                    buy_volume += quant
         if buy_orders:
             best_bid = max(buy_orders.keys())
             best_bid_amount = buy_orders[best_bid]
@@ -222,41 +186,34 @@ class Trader:
                 if quant > 0:
                     orders.append(Order("RAINFOREST_RESIN", best_bid, -quant))
                     sell_volume += quant
-        
-        buy_quant=position_limit-(position+buy_volume)
-        if buy_quant>0:
-            orders.append(Order("RAINFOREST_RESIN",  best_bid_fair+ 1, buy_quant))
 
+        buy_quant = position_limit - (position + buy_volume)
+        if buy_quant > 0:
+            orders.append(Order("RAINFOREST_RESIN", best_bid_fair + 1, buy_quant))
 
-        sell_quant=position_limit+(position-sell_volume)
-        if sell_quant>0:
+        sell_quant = position_limit + (position - sell_volume)
+        if sell_quant > 0:
             orders.append(Order("RAINFOREST_RESIN", best_ask_fair - 1, -sell_quant))
 
-
         return orders
-
 
     def run(self, state: TradingState) -> Dict[str, List[Order]]:
         result = {}
 
-
         if 'RAINFOREST_RESIN' in state.order_depths:
-            rain_position = state.position.get('RAINFOREST_RESIN',0)
-            rain_orders=self.rain_order(state.order_depths['RAINFOREST_RESIN'],position=rain_position)
-            result['RAINFOREST_RESIN']=rain_orders
-        
+            rain_position = state.position.get('RAINFOREST_RESIN', 0)
+            rain_orders = self.rain_order(state.order_depths['RAINFOREST_RESIN'], position=rain_position)
+            result['RAINFOREST_RESIN'] = rain_orders
+
         # if 'KELP' in state.order_depths:
-            
+
         #     kelp_position = state.position.get('RAINFOREST_RESIN',0)
         #     fair_price = self.track_mid_price('KELP', ((max(state.order_depths.buy_orders.keys())+min(state.order_depths.sell_orders.keys()))/2), window=10)
         #     rain_orders=self.kelp_order(state.order_depths['RAINFOREST_RESIN'],fair_priceposition=kelp_position)
         #     result['KELP']=rain_orders
 
-
-
         traderData = "MM_MeanReversion_Ladder"
         conversions = 1
 
-
-        logger.flush(state, result, conversions, traderData) #this is necessary for visualiser
+        logger.flush(state, result, conversions, traderData)  # this is necessary for visualiser
         return result, conversions, traderData

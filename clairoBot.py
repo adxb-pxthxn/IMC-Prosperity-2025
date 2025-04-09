@@ -152,34 +152,54 @@ class Product:
 
 PARAMS = {
     Product.RAINFOREST_RESIN: {
-        "fair_value": 10000,
-        "take_width": 1,  # default spread for MM
-        "clear_width": 0,
-        "disregard_edge": 1,  # disregards orders for joining or pennying within this value from fair
-        "join_edge": 2,  # joins orders within 2 ticks joining instead of pennying against
-        "default_edge": 4,  # if no options to join post quote 4 ticks
-        "soft_position_limit": 30,  # soft position limit, pretty much skews inventory to follow this
-        "reversion_beta": -0.1,  # how strong the pullback to mean is
-        "mean_window": 20,       # how many ticks of mid-price we track
-        "TRADE": True  # flag to trade or not, for iso testing strats for each asset
+        "fair_value": 10000,               # long-term stable fair price to anchor to
+        "take_width": 1,                  # unused in resin for now
+        "clear_width": 0,                 # unused in resin for now
+
+        # === signal-driven MR logic ===
+        "std_threshold": 1.0,             # how volatile it needs to be to trigger MR
+        "momentum_threshold": 0.0,        # how directional it needs to be to stay out of static
+        "mr_base_edge": 5,                # base MR quote offset from fair
+        "mr_std_multiplier": 1.2,         # scale edge size based on volatility
+        "min_mr_edge": 1,                 # quote re-aggression floor
+
+        # === static MM behavior ===
+        "default_edge": 4,                # distance from fair to quote in MM (static mode)
+        "disregard_edge": 1,              # don't quote too close to book levels
+        "join_edge": 2,                   # how close we need to be to join vs penny
+
+        # === inventory biasing ===
+        "soft_position_limit": 30,        # where we start skewing quotes based on inventory
+        "skew_adjust": 1,                 # how much to nudge quotes when leaning
+
+        "stale_requote_aggression": 1,    # ticks to boost bid/ask after stale
+        "stale_aggression_threshold": 5,  # how many ticks without fills before boost
+        "market_sweep_threshold": 15,     # volume change threshold to detect sweeps
+        "partial_fill_tracking": True,
+        "fallback_edge_boost": 1 ,         # increase quoting width in fallback mode
+
+        # === mode + fallback dynamics ===
+        "max_mr_failures": 3,             # how many bad MR entries before forcing static
+        "TRADE": True                     # toggle trading on/off
     },
     Product.KELP: {
-        "take_width": 1,  # default spread for MM
-        "clear_width": 0,  # how close the BP to our FP to clear, 0 means it must be fair
-        "prevent_adverse": True,  # flag to prevent trades when there is too much depth at best price
-        "adverse_volume": 15,  # this is the volume threshold to toggle prevent_adverse
-        "reversion_beta": -0.229,  # mean reversion coefficient pretty much our confidence on it dropping to mean
-        "disregard_edge": 1,  # disregards orders for joining or pennying within this value from fair
-        "join_edge": 1,  # Joins when someone is 1 tick from FP, keeps us at the top of the book
-        "default_edge": 1,  # When no chances for joining and pennying just quote 1 tick from FP
-        "TRADE": True  # flag to trade or not, for iso testing strats for each asset
+        "take_width": 1,                  # default spread for MM
+        "clear_width": 0,                 # how close the BP to our FP to clear, 0 means it must be fair
+        "prevent_adverse": True,          # flag to prevent trades when there is too much depth at best price
+        "adverse_volume": 15,             # this is the volume threshold to toggle prevent_adverse
+        "reversion_beta": -0.229,         # mean reversion coefficient pretty much our confidence on it dropping to mean
+        "disregard_edge": 1,              # disregards orders for joining or pennying within this value from fair
+        "join_edge": 1,                   # joins when someone is 1 tick from FP, keeps us at the top of the book
+        "default_edge": 1,                # when no chances for joining and pennying just quote 1 tick from FP
+        "TRADE": False                    # flag to trade or not, for iso testing strats for each asset
 
     },
 }
 
-
 class Trader:
+    DEBUG_LOGGING = True
     def __init__(self, params=None):
+        self.current_tick = None
         if params is None:
             params = PARAMS
         self.params = params
@@ -481,50 +501,171 @@ class Trader:
             return fair
         return None
 
-    def rain_order(self, order_depth: OrderDepth, position=0, position_limit=50):
-        orders = []
-        buy_volume = 0
-        sell_volume = 0
-        fair = self.params[Product.RAINFOREST_RESIN]["fair_value"]
+    def rain_order(self, order_depth: OrderDepth, position: int) -> list[Order]:
+        product = Product.RAINFOREST_RESIN
+        params = self.params[product]
+        orders: list[Order] = []
 
-        sell_orders = order_depth.sell_orders
-        buy_orders = order_depth.buy_orders
-        try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair + 1], default=fair + 2)
-        except ValueError:
-            best_ask_fair = fair + 1
+        self.update_resin_mid(order_depth)
 
-        try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair + 1], default=fair - 2)
-        except ValueError:
-            best_bid_fair = fair - 1
+        # === init state vars if missing ===
+        if not hasattr(self, "resin_stale_ticks"):
+            self.resin_stale_ticks = 0
+            self.resin_last_position = position
+            self.resin_last_mode = "mean_reversion"
+            self.resin_reaggression_ticks = 0
+            self.resin_mr_failures = 0
+            self.resin_no_fill_ticks = 0
+            self.resin_refresh_ticks = 0
 
-        if sell_orders:
-            best_ask = min(sell_orders.keys())
-            best_ask_ammount = -sell_orders[best_ask]
-            if best_ask < fair:
-                quant = min(best_ask_ammount, position_limit - position)
-                if quant > 0:
-                    orders.append(Order("RAINFOREST_RESIN", best_ask, quant))
-                    buy_volume += quant
-        if buy_orders:
-            best_bid = max(buy_orders.keys())
-            best_bid_amount = buy_orders[best_bid]
-            if best_bid > fair:
-                quant = min(best_bid_amount, position_limit + position)
-                if quant > 0:
-                    orders.append(Order("RAINFOREST_RESIN", best_bid, -quant))
-                    sell_volume += quant
+        # === check if we're getting filled ===
+        filled = position != self.resin_last_position
+        if not filled:
+            self.resin_stale_ticks += 1
+            self.resin_reaggression_ticks += 1
+            self.resin_no_fill_ticks += 1
+            self.resin_refresh_ticks += 1
+        else:
+            self.resin_stale_ticks = 0
+            self.resin_reaggression_ticks = 0
+            self.resin_no_fill_ticks = 0
+            self.resin_refresh_ticks = 0
+            self.resin_mr_failures = max(0, self.resin_mr_failures - 1)
+        self.resin_last_position = position
 
-        buy_quant = position_limit - (position + buy_volume)
-        if buy_quant > 0:
-            orders.append(Order("RAINFOREST_RESIN", best_bid_fair + 1, buy_quant))
+        # === pull params ===
+        fair = params["fair_value"]
+        std_threshold = params.get("std_threshold", 1.0)
+        momentum_threshold = params.get("momentum_threshold", 0.0)
+        base_mr_edge = params.get("mr_base_edge", 5)
+        std_mult = params.get("mr_std_multiplier", 1.2)
+        skew_adjust = params.get("skew_adjust", 1)
+        max_mr_failures = params.get("max_mr_failures", 3)
+        min_edge = params.get("min_mr_edge", 1)
+        default_edge = params.get("default_edge", 4)
+        disregard_edge = params.get("disregard_edge", 1)
+        join_edge = params.get("join_edge", 2)
+        soft_position_limit = params.get("soft_position_limit", 30)
 
-        sell_quant = position_limit + (position - sell_volume)
-        if sell_quant > 0:
-            orders.append(Order("RAINFOREST_RESIN", best_ask_fair - 1, -sell_quant))
+        # new fallback+aggression tuning
+        stale_aggression_threshold = params.get("stale_aggression_threshold", 5)
+        stale_requote_aggression = params.get("stale_requote_aggression", 1)
+        fallback_edge_boost = params.get("fallback_edge_boost", 1)
+
+        # === signal gen ===
+        mean = self.calculate_mean()
+        std = self.calculate_std()
+        momentum = self.calculate_momentum()
+        buffer_full = len(self.resin_mid_history) >= 20
+
+        # === mode control ===
+        low_volatility = std < std_threshold
+        no_momentum = abs(momentum) <= momentum_threshold
+        weak_signal = low_volatility and no_momentum
+        force_static = self.resin_stale_ticks > 20 and weak_signal
+        conditions_favor_mr = std > std_threshold and abs(momentum) > momentum_threshold
+
+        if self.resin_mr_failures >= max_mr_failures:
+            conditions_favor_mr = False
+
+        mode = "mean_reversion"
+        if weak_signal or force_static or not conditions_favor_mr:
+            mode = "static"
+            if self.resin_last_mode == "mean_reversion":
+                self.resin_mr_failures += 1
+        elif self.resin_last_mode == "static" and conditions_favor_mr:
+            self.resin_mr_failures = 0
+
+        if self.DEBUG_LOGGING and mode != self.resin_last_mode:
+            logger.print(f"Mode transition: {self.resin_last_mode} → {mode}")
+        self.resin_last_mode = mode
+
+        # === quote logic ===
+        buy_order_volume = 0
+        sell_order_volume = 0
+
+        if mode == "static":
+            # fallback to MM but increase edge slightly if we've been stuck
+            adjusted_edge = default_edge
+            if self.resin_stale_ticks > stale_aggression_threshold:
+                adjusted_edge += fallback_edge_boost
+
+            orders, buy_order_volume, sell_order_volume = self.make_orders(
+                product,
+                order_depth,
+                fair,
+                position,
+                buy_order_volume,
+                sell_order_volume,
+                disregard_edge,
+                join_edge,
+                adjusted_edge,
+                manage_position=True,
+                soft_position_limit=soft_position_limit,
+            )
+        else:
+            # MR mode with re-aggression + vol/momentum-based adjustment
+            edge = base_mr_edge + std * std_mult
+            if std < 1.5:
+                edge *= 0.8
+            if buffer_full:
+                edge *= 0.9
+            if self.resin_reaggression_ticks > 0:
+                edge = max(min_edge, edge - self.resin_reaggression_ticks)
+
+            # If we're stale for too long, add edge aggression
+            if self.resin_stale_ticks > stale_aggression_threshold:
+                edge = max(min_edge, edge - stale_requote_aggression)
+
+            skew = -skew_adjust if momentum > 0 else skew_adjust
+            bid = round(fair - edge + skew)
+            ask = round(fair + edge + skew)
+            if position > 0: ask -= 1
+            if position < 0: bid += 1
+
+            limit = self.LIMIT[product]
+            orders.append(Order(product, bid, limit))
+            orders.append(Order(product, ask, -limit))
+
+        # === logging ===
+        if self.DEBUG_LOGGING and self.current_tick % 100 == 0:
+            logger.print(
+                f"RESIN tick: {self.current_tick} | mode: {mode} | fair: {fair} | mean: {round(mean)} | "
+                f"std: {round(std, 2)} | momentum: {momentum} | stale_ticks: {self.resin_stale_ticks} | "
+                f"reaggression_ticks: {self.resin_reaggression_ticks} | mr_failures: {self.resin_mr_failures}"
+            )
+            logger.print(f"Quotes: {[(o.price, o.quantity) for o in orders]}")
 
         return orders
+
+    # === Updates midprice history for resin every tick ===
+    def update_resin_mid(self, order_depth: OrderDepth):
+        if len(order_depth.buy_orders) > 0 and len(order_depth.sell_orders) > 0:
+            best_bid = max(order_depth.buy_orders.keys())
+            best_ask = min(order_depth.sell_orders.keys())
+            mid = (best_bid + best_ask) / 2
+            self.resin_mid_history.append(mid)
+            self.resin_mid_history = self.resin_mid_history[-20:]  # keep history max 20 long
+
+    # === gets the average mid price ===
+    def calculate_mean(self) -> float:
+        if not self.resin_mid_history:
+            return self.params[Product.RAINFOREST_RESIN]["fair_value"]
+        return sum(self.resin_mid_history) / len(self.resin_mid_history)
+
+    # === std dev of mid prices to detect quiet market ===
+    def calculate_std(self) -> float:
+        if len(self.resin_mid_history) < 2:
+            return 0.0
+        mean = self.calculate_mean()
+        return (sum((x - mean) ** 2 for x in self.resin_mid_history) / len(self.resin_mid_history)) ** 0.5
+
+    # === basic directional momentum signal from midprice trend ===
+    def calculate_momentum(self) -> int:
+        hist = self.resin_mid_history
+        if len(hist) < 3:
+            return 0
+        return 1 if hist[-1] > hist[0] else -1 if hist[-1] < hist[0] else 0
 
     def run(self, state: TradingState):
         traderObject = {}
@@ -532,16 +673,21 @@ class Trader:
             traderObject = jsonpickle.decode(state.traderData)
 
         result = {}
+        self.current_tick = state.timestamp
 
+        # === RAINFOREST_RESIN block === #
         if (
                 Product.RAINFOREST_RESIN in self.params and
                 Product.RAINFOREST_RESIN in state.order_depths and
                 self.params[Product.RAINFOREST_RESIN].get("TRADE", True)
         ):
-            RR_position = state.position.get('RAINFOREST_RESIN', 0)
-            RR_orders = self.rain_order(state.order_depths['RAINFOREST_RESIN'], position=RR_position)
-            result['RAINFOREST_RESIN'] = RR_orders
+            result[Product.RAINFOREST_RESIN] = self.rain_order(
+                state.order_depths[Product.RAINFOREST_RESIN],
+                state.position.get(Product.RAINFOREST_RESIN, 0)
+            )
 
+
+        # === KELP block === #
         if (
                 Product.KELP in self.params and
                 Product.KELP in state.order_depths and
