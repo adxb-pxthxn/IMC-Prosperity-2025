@@ -1,9 +1,14 @@
 from typing import Dict, List
 from datamodel import OrderDepth, TradingState, Order
 
+BEST_RESIN_WINDOW = 320
+BEST_KELP_WINDOW = 80
+
 class Trader:
-    def __init__(self):
+    def __init__(self, resin_window = BEST_RESIN_WINDOW, kelp_window = BEST_KELP_WINDOW):
         self.mid_price_history = {}
+        self.resin_window = resin_window
+        self.kelp_window = kelp_window
 
     def track_mid_price(self, product: str, mid_price: float, window: int) -> float:
         history = self.mid_price_history.get(product, [])
@@ -58,7 +63,7 @@ class Trader:
             position = state.position.get(product, 0)
 
             if product == "KELP":
-                fair_price = self.track_mid_price(product, mid_price, window=10)
+                fair_price = self.track_mid_price(product, mid_price, window=self.kelp_window)
                 config = {
                     "start_offset": 3,
                     "levels": 2,
@@ -68,7 +73,7 @@ class Trader:
                 orders = self.place_ladder_orders(product, fair_price, position, config)
 
             elif product == "RAINFOREST_RESIN":
-                fair_price = self.track_mid_price(product, mid_price, window=20)
+                fair_price = self.track_mid_price(product, mid_price, window=self.resin_window)
                 config = {
                     "start_offset": 2,
                     "levels": 3,
@@ -78,6 +83,7 @@ class Trader:
                 orders = self.place_ladder_orders(product, fair_price, position, config)
 
             result[product] = orders
+
 
         traderData = "Hybrid_Refined_KELP_Resin"
         conversions = 1

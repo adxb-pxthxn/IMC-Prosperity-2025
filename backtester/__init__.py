@@ -72,7 +72,7 @@ def parse_out(out: Optional[Path], no_out: bool) -> Optional[Path]:
     return Path.cwd() / "backtests" / f"{timestamp}.log"
 
 
-def print_day_summary(result: BacktestResult) -> None:
+def print_day_summary(result: BacktestResult) -> int:
     last_timestamp = result.activity_logs[-1].timestamp
 
     product_lines = []
@@ -90,6 +90,10 @@ def print_day_summary(result: BacktestResult) -> None:
 
     print(*reversed(product_lines), sep="\n")
     print(f"Total profit: {total_profit:,.0f}")
+    return total_profit
+
+    return profit
+    
 
 
 def merge_results(
@@ -244,6 +248,66 @@ def run_test(
 
     if vis and output_file is not None:
         open_visualizer(output_file)
+
+
+
+def run_test_local(
+    Trader,
+    days: list[str],
+    merge_pnl: bool = False,
+    vis: bool = False,
+    out: Optional[Path] = None,
+    no_out: bool = False,
+    data: Optional[Path] = None,
+    print_output: bool = False,
+    match_trades: TradeMatchingMode = TradeMatchingMode.all,
+    no_progress: bool = False,
+    original_timestamps: bool = False
+) -> list[BacktestResult]: 
+
+
+    file_reader = parse_data(Path('backtester/resources'))
+    parsed_days = parse_days(file_reader, days)
+    output_file = parse_out(out, no_out)
+
+    show_progress_bars = not no_progress and not print_output
+
+    results = []
+    out=[]
+    for round_num, day_num in parsed_days:
+        print(f"Backtesting on round {round_num} day {day_num}")
+
+
+        result = run_backtest(
+            Trader,
+            file_reader,
+            round_num,
+            day_num,
+            print_output,
+            match_trades,
+            True,
+            show_progress_bars,
+        )
+
+        out.append(print_day_summary(result))
+        if len(parsed_days) > 1:
+            print()
+
+        results.append(result)
+
+    if len(parsed_days) > 1:
+        print_overall_summary(results)
+
+
+    if output_file is not None:
+        merged_results = reduce(lambda a, b: merge_results(a, b, merge_pnl, not original_timestamps), results)
+        write_output(output_file, merged_results)
+        print(f"\nSuccessfully saved backtest results to {format_path(output_file)}")
+
+    if vis and output_file is not None:
+        open_visualizer(output_file)
+
+    return out
 
 
 def main() -> None:
