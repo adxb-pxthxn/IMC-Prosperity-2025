@@ -468,70 +468,37 @@ class InkStrategy(MeanReversion):
         self.threshold=t
         self.price_history = []
         self.resin_history = []
-        self.ofi_history = []
         self.lambda_ = 0.94  # Decay factor for EWMA risk-free rate estimation
-        self.stop_loss_threshold = 0.03
-        self.market_impact_threshold = 0.05
-        self.history_window = 15
-    
-    def get_mid_price(self, order, traderObject):
-        if order.buy_orders and order.sell_orders:
-            best_bid = max(order.buy_orders.keys())
-            best_ask = min(order.sell_orders.keys())
-            return (best_bid + best_ask) / 2.0
-        else:
-            # Fallback or default, if one side of the order book is missing
-            return None 
-    
-    def store_price_data(self, squid_ink_price, resin_price, order_depth):
+        self.window_size = 25
+
+    def store_price_data(self, squid_ink_price, resin_price):
         if squid_ink_price is not None:
             self.price_history.append(squid_ink_price)
         if resin_price is not None:
             self.resin_history.append(resin_price)
 
-        self.ofi_history.append(self.calculate_ofi(order_depth))
-
-        self.price_history = self.price_history[-self.history_window:]  # Keep last 100 points
-        self.resin_history = self.resin_history[-self.history_window:]
-        self.ofi_history = self.ofi_history[-50:]
+        self.price_history = self.price_history[-self.window_size:]
+        self.resin_history = self.resin_history[-self.window_size:]
 
     def calculate_realized_volatility(self, prices):
         if len(prices) < 2:
             return 0
         log_returns = np.log(np.array(prices[1:]) / np.array(prices[:-1]))
-        return np.sqrt(np.sum(log_returns**2))  # Realized intraday volatility
-
-    def detect_market_regime(self):
-        if len(self.price_history) < 10:
-            return "Neutral"
-        vol = np.std(np.diff(np.log(self.price_history[-10:])))
-        return "High Vol" if vol > 0.005 else "Low Vol"
+        return np.sqrt(np.sum(log_returns**2))  # Intraday realized volatility
 
     def estimate_risk_free_rate(self):
         if len(self.resin_history) < 2:
             return 0
         log_returns = np.log(np.array(self.resin_history[1:]) / np.array(self.resin_history[:-1]))
-        ewma_r = np.mean(log_returns) * 252  # Annualized
+        ewma_r = np.mean(log_returns) * self.window_size  # Annualized, but could be shorter term
         return ewma_r * self.lambda_ + (1 - self.lambda_) * log_returns[-1]
 
     def estimate_time_to_maturity(self):
-        trading_intervals = min(len(self.price_history), 252)
-        return 1 / trading_intervals if trading_intervals > 0 else 1 / 252
-
-    def calculate_ofi(self, order_depth):
-        bid_pressure = sum(order_depth.buy_orders.values())
-        ask_pressure = sum(order_depth.sell_orders.values())
-        return bid_pressure - ask_pressure
-
-    def should_trade(self):
-        if len(self.price_history) < 2:
-            return True
-        price_change = abs(self.price_history[-1] - self.price_history[-2]) / self.price_history[-2]
-        return price_change < self.market_impact_threshold  # Avoid large market moves
+        trading_intervals = min(len(self.price_history), self.window_size)
+        return 1 / trading_intervals if trading_intervals > 0 else 1 / self.window_size
 
     def get_fair_price(self, order: OrderDepth, traderObject):
         est_price, dev, long = self.emv.update(self.get_mid_price(order,traderObject))
-
         if not order.sell_orders or not order.buy_orders:
             return est_price, dev, long
 
@@ -545,29 +512,18 @@ class InkStrategy(MeanReversion):
 
         expected_price = mid_price * np.exp(r * T + 0.5 * vol**2 * T)
 
-        # Market Regime Detection
-        regime = self.detect_market_regime()
-        spread_multiplier = 2 if regime == "High Vol" else 1
-
-        # Order Flow Imbalance Adjustment
-        ofi_signal = self.calculate_ofi(order)
-        if ofi_signal > 0:  # Buy-side pressure
-            best_bid += spread_multiplier
-        else:  # Sell-side pressure
-            best_ask -= spread_multiplier
-
-        # Risk Management: Stop-Loss & Market Impact
-        if abs(mid_price - expected_price) / mid_price > self.stop_loss_threshold:
-            return est_price, dev, long  # Stop trading if fair price deviates too much
-
-        if not self.should_trade():
-            return est_price, dev, long  # Pause trading if market moves too fast
-
-        # Store latest prices for next calculation
-        self.store_price_data(mid_price, traderObject.get("RAINFOREST_RESIN_last_price", None), order)
-
+        self.store_price_data(mid_price, traderObject.get("RAINFOREST_RESIN_last_price", None))
         return expected_price, dev, long
 
+    def get_mid_price(self, order, traderObject):
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+        else:
+            # Fallback or default, if one side of the order book is missing
+            return None 
+        
     def act(self,state,traderObject):
         buy_volume=0
         sell_volume=0
@@ -596,23 +552,6 @@ class InkStrategy(MeanReversion):
         except ValueError:
             best_bid_fair = fair-dev*self.threshold
 
-        # if sell_orders and long>fair:
-        #     best_ask=min(sell_orders.keys())
-        #     best_ask_amount=-sell_orders[best_ask]
-        #     if best_ask<fair-dev*self.threshold:
-        #         quant=min(best_ask_amount,position_limit-position)
-        #         if quant>0:
-        #             self.buy(best_ask,quant)
-        #             buy_volume+=quant
-        # if buy_orders and long<fair:
-        #     best_bid = max(buy_orders.keys())
-        #     best_bid_amount = buy_orders[best_bid]
-        #     if best_bid > fair+dev*self.threshold:
-        #         quant = min(best_bid_amount, position_limit + position)
-        #         if quant > 0:
-        #             self.sell(best_bid,quant)
-        #             sell_volume += quant
-        
         buy_quant=position_limit-(position+buy_volume)
         if long-dev*self.threshold>fair and buy_quant>0:
             self.buy(best_bid_fair-dev*self.threshold,buy_quant)
