@@ -407,7 +407,7 @@ class KelpStrategy(MarketMaking):
 class ResinStrategy(MeanReversion):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.ewm=EWM(0.2)
+        self.ewm=EWM(0.15)
 
     def get_mid_price(self, order, traderObject):
         
@@ -443,23 +443,25 @@ class EWMAbs:
     def update(self, price):
 
         ema_price = self.price_ema.update(price)
+        long_ema=self.long_ema.update(price)
 
 
         abs_deviation = abs(price - ema_price)
 
         ema_abs_deviation = self.deviation_ema.update(abs_deviation)
 
-        return ema_price, ema_abs_deviation
+        return ema_price, ema_abs_deviation,long_ema
 
 
 class InkStrategy(MeanReversion):
-    def __init__(self, symbol, limit,t=1.3,alpha1=0.35,alpha2=0.55,alpha3=0.0001):
+    def __init__(self, symbol, limit,t=0.5,alpha1=0.15,alpha2=0.35,alpha3=0.1):
         super().__init__(symbol, limit)
         self.emv=EWMAbs(alpha1,alpha2,alpha3)
         self.threshold=t
     
     def get_mid_price(self, order, traderObject):
         
+
         if order.buy_orders and order.sell_orders:
             best_bid = min(order.buy_orders.keys())
             best_ask = max(order.sell_orders.keys())
@@ -472,12 +474,13 @@ class InkStrategy(MeanReversion):
         return self.emv.update(self.get_mid_price(order,traderObject))
 
     def act(self,state,traderObject):
-
         buy_volume=0
         sell_volume=0
         order_depth = state.order_depths[self.symbol]
+
         
-        fair ,dev= self.get_fair_price(order_depth, traderObject)
+        fair ,dev,long= self.get_fair_price(order_depth, traderObject)
+
 
         # get and sort each side of the order book #
         order_depth = state.order_depths[self.symbol]
@@ -499,30 +502,30 @@ class InkStrategy(MeanReversion):
         except ValueError:
             best_bid_fair = fair-dev*self.threshold
 
-        if sell_orders:
-            best_ask=min(sell_orders.keys())
-            best_ask_amount=-sell_orders[best_ask]
-            if best_ask<fair-dev*self.threshold:
-                quant=min(best_ask_amount,position_limit-position)
-                if quant>0:
-                    self.buy(best_ask,quant)
-                    buy_volume+=quant
-        if buy_orders:
-            best_bid = max(buy_orders.keys())
-            best_bid_amount = buy_orders[best_bid]
-            if best_bid > fair+dev*self.threshold:
-                quant = min(best_bid_amount, position_limit + position)
-                if quant > 0:
-                    self.sell(best_bid,quant)
-                    sell_volume += quant
+        # if sell_orders:
+        #     best_ask=min(sell_orders.keys())
+        #     best_ask_amount=-sell_orders[best_ask]
+        #     if best_ask<fair-dev*self.threshold:
+        #         quant=min(best_ask_amount,position_limit-position)
+        #         if quant>0:
+        #             self.buy(best_ask,quant)
+        #             buy_volume+=quant
+        # if buy_orders:
+        #     best_bid = max(buy_orders.keys())
+        #     best_bid_amount = buy_orders[best_bid]
+        #     if best_bid > fair+dev*self.threshold:
+        #         quant = min(best_bid_amount, position_limit + position)
+        #         if quant > 0:
+        #             self.sell(best_bid,quant)
+        #             sell_volume += quant
         
         buy_quant=position_limit-(position+buy_volume)
-        if buy_quant>0:
+        if long>fair and buy_quant>0:
             self.buy(best_bid_fair,buy_quant)
 
 
         sell_quant=position_limit+(position-sell_volume)
-        if sell_quant>0:
+        if long<fair and sell_quant>0:
             self.sell(best_ask_fair,sell_quant)
 
 
