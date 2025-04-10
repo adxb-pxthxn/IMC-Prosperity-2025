@@ -156,8 +156,8 @@ class Trader:
 
     def __init__(self):
         self.squid_ink_param={
-            'alpha_l':0.05,
-            'alpha_s':0.5
+            'alpha_l':0.01,
+            'alpha_s':0.05
         }
         self.squid_ink_ewm={
             'long':EWM(self.squid_ink_param['alpha_l']),
@@ -180,7 +180,7 @@ class Trader:
         # ... (rest of the order book based logic)
         # For instance, you could generate a BUY signal if short_ewm > long_ewm
         # and a SELL signal if short_ewm < long_ewm; then use order_depth to determine pricing.
-
+        signal=long_ewm-short_ewm 
         if short_ewm > long_ewm:
             # Example: use available sell orders if they offer a price better than fair
             sell_orders = order_depth.sell_orders
@@ -192,7 +192,7 @@ class Trader:
             #         if quant > 0:
             #             orders.append(Order("SQUID_INK", best_ask,quant))
             # Place additional limit buy if needed
-            orders.append(Order("SQUID_INK", fair - 0.5,- max(0, position_limit - position)))
+            orders.append(Order("SQUID_INK", int(fair - 1),- max(0,int( (position_limit*signal - position)))))
         else:
             # For a bearish signal, similarly use buy orders
             buy_orders = order_depth.buy_orders
@@ -203,7 +203,7 @@ class Trader:
             #         quant = min(best_bid_volume, position_limit + position)
             #         if quant > 0:
             #             orders.append(Order("SQUID_INK", best_bid, -quant))
-            orders.append(Order("SQUID_INK", fair + 0.5, -max(0, position_limit + position)))
+            orders.append(Order("SQUID_INK",int( fair + 1), -max(0, int((position_limit*signal + position)))))
         
         return orders
 
@@ -264,10 +264,10 @@ class Trader:
         result = {}
 
 
-        if 'RAINFOREST_RESIN' in state.order_depths:
-            rain_position = state.position.get('RAINFOREST_RESIN',0)
-            rain_orders=self.rain_order(state.order_depths['RAINFOREST_RESIN'],position=rain_position)
-            result['RAINFOREST_RESIN']=rain_orders
+        # if 'RAINFOREST_RESIN' in state.order_depths:
+        #     rain_position = state.position.get('RAINFOREST_RESIN',0)
+        #     rain_orders=self.rain_order(state.order_depths['RAINFOREST_RESIN'],position=rain_position)
+        #     result['RAINFOREST_RESIN']=rain_orders
         
         if 'SQUID_INK' in state.order_depths:
             rain_position = state.position.get('SQUID_INK',0)

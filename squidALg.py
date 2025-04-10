@@ -142,6 +142,14 @@ class EWM:
             self.value = self.alpha * price + (1 - self.alpha) * self.value
         return self.value
 
+class MAVG:
+    def __init__(self,length=10,curr=None):
+        self.window=deque(maxlen=length)
+        self.curr=curr
+    def calculate(self,number):
+        pass
+
+
 def compute_midprice(order_depth):
     # Assume order_depth.buy_orders and order_depth.sell_orders are dictionaries 
     # mapping price -> volume
@@ -156,7 +164,7 @@ class Trader:
 
     def __init__(self):
         self.squid_ink_param={
-            'alpha_l':0.05,
+            'alpha_l':0.001,
             'alpha_s':0.5
         }
         self.squid_ink_ewm={
@@ -166,46 +174,53 @@ class Trader:
 
     def squid_order(self, order_depth, position=0, position_limit=50):
         orders = []
-        
-        # Compute the midprice as our fair price
         fair = compute_midprice(order_depth)
         if fair is None:
-            # If we cannot compute a fair price, we hold.
             return orders
 
-        # Update our EWMA values using the fair price.
+        # Update EWMs
         short_ewm = self.squid_ink_ewm['short'].update(fair)
         long_ewm = self.squid_ink_ewm['long'].update(fair)
-
-        # ... (rest of the order book based logic)
-        # For instance, you could generate a BUY signal if short_ewm > long_ewm
-        # and a SELL signal if short_ewm < long_ewm; then use order_depth to determine pricing.
-
-        if short_ewm > long_ewm:
-            # Example: use available sell orders if they offer a price better than fair
+        
+        # Add signal confirmation threshold
+        signal_strength = abs(short_ewm - long_ewm)
+        
+        min_strength = 0.7  # Price unit threshold
+        
+        if short_ewm > long_ewm and signal_strength > min_strength:
+            # Bullish with confirmation
             sell_orders = order_depth.sell_orders
-            # if sell_orders:
-            #     best_ask = min(sell_orders.keys())
-            #     best_ask_volume = -sell_orders[best_ask]  # Make it positive
-            #     if best_ask < fair:
-            #         quant = min(best_ask_volume, position_limit - position)
-            #         if quant > 0:
-            #             orders.append(Order("SQUID_INK", best_ask,quant))
-            # Place additional limit buy if needed
-            orders.append(Order("SQUID_INK", fair - 0.5,- max(0, position_limit - position)))
-        else:
-            # For a bearish signal, similarly use buy orders
+            if sell_orders:
+                best_ask = min(sell_orders.keys())
+
+                quant = min(-sell_orders[best_ask], position_limit - position)
+                if quant > 0 and best_ask < long_ewm:  # Only buy if below long trend
+                    orders.append(Order("SQUID_INK", best_ask, quant))
+        
+        elif short_ewm < long_ewm and signal_strength > min_strength:
+            # Bearish with confirmation
             buy_orders = order_depth.buy_orders
-            # if buy_orders:
-            #     best_bid = max(buy_orders.keys())
-            #     best_bid_volume = buy_orders[best_bid]
-            #     if best_bid > fair:
-            #         quant = min(best_bid_volume, position_limit + position)
-            #         if quant > 0:
-            #             orders.append(Order("SQUID_INK", best_bid, -quant))
-            orders.append(Order("SQUID_INK", fair + 0.5, -max(0, position_limit + position)))
+            if buy_orders:
+                best_bid = max(buy_orders.keys())
+                quant = min(buy_orders[best_bid], position_limit + position)
+                if quant > 0 and best_bid > long_ewm:  # Only sell if above long trend
+                    orders.append(Order("SQUID_INK", best_bid, -quant))
+        
+       
+        pos_weight = 1 - abs(position)/position_limit
+        spread_adjust = int(pos_weight * 2)  
+        
+
+        if position < position_limit: 
+            orders.append(Order("SQUID_INK", int(fair - spread_adjust), 
+                            position_limit - position))
+        
+        if position > -position_limit:
+            orders.append(Order("SQUID_INK", int(fair + spread_adjust), 
+                            -position_limit - position))
         
         return orders
+
 
 
 
