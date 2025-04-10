@@ -45,11 +45,47 @@ def cli(
     output_file = parse_out(out, no_out)
 
     show_progress_bars = not no_progress and not print_output
+    
+    # windows = [i*10 for i in range(1,100)]
+    hps = [1] 
+    best = [-1,-1] # profit, window
+    for hp in hps:
+        results = []
+        total_profit = None
+        for round_num, day_num in parsed_days:
+            print(f"Backtesting {algorithm} on round {round_num} day {day_num} with hp {hp}")
+            reload(trader_module)
 
-    results = []
+            result = run_backtest(
+                trader_module.Trader(),
+                file_reader,
+                round_num,
+                day_num,
+                print_output,
+                match_trades,
+                True,
+                show_progress_bars,
+            )
+            
+            total_profit = print_day_summary(result)
+            if len(parsed_days) > 1:
+                print()
+
+            results.append(result)
+
+        if len(parsed_days) > 1:
+            total_profit = print_overall_summary(results)
+            
+        if total_profit > best[0]:
+            best = [total_profit, hp]
+    
+    print(f"best hp size is: {best[1]} with profit {best[0]}")
+
+    print("+--------------------+")
+
+    #print the best param:
     for round_num, day_num in parsed_days:
-        print(f"Backtesting {algorithm} on round {round_num} day {day_num}")
-
+        print(f"Optimal: Backtesting {algorithm} on round {round_num} day {day_num} with hp {best[1]}")
         reload(trader_module)
 
         result = run_backtest(
@@ -62,7 +98,7 @@ def cli(
             True,
             show_progress_bars,
         )
-
+        
         print_day_summary(result)
         if len(parsed_days) > 1:
             print()
@@ -70,7 +106,12 @@ def cli(
         results.append(result)
 
     if len(parsed_days) > 1:
-        print_overall_summary(results)
+        total_profit = print_overall_summary(results)
+        if total_profit > best[0]:
+            best = [total_profit, hp]
+
+
+
 
     if output_file is not None:
         merged_results = reduce(lambda a, b: merge_results(a, b, merge_pnl, not original_timestamps), results)

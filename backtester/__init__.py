@@ -72,7 +72,7 @@ def parse_out(out: Optional[Path], no_out: bool) -> Optional[Path]:
     return Path.cwd() / "backtests" / f"{timestamp}.log"
 
 
-def print_day_summary(result: BacktestResult) -> None:
+def print_day_summary(result: BacktestResult) -> int:
     last_timestamp = result.activity_logs[-1].timestamp
 
     product_lines = []
@@ -90,6 +90,7 @@ def print_day_summary(result: BacktestResult) -> None:
 
     print(*reversed(product_lines), sep="\n")
     print(f"Total profit: {total_profit:,.0f}")
+    return total_profit
 
     return profit
     
