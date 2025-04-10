@@ -407,11 +407,20 @@ class KelpStrategy(MarketMaking):
 class ResinStrategy(MeanReversion):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.last_price = None
+        self.ewm=EWM(0.2)
 
-    def get_fair_price(self, state: TradingState, traderObject) -> int:
-        traderObject = traderObject
-        return 10_000
+    def get_mid_price(self, order, traderObject):
+        
+        if order.buy_orders and order.sell_orders:
+            best_bid = min(order.buy_orders.keys())
+            best_ask = max(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+        else:
+            return None 
+    
+    def get_fair_price(self, order, traderObject):
+        return self.ewm.update(self.get_mid_price(order,traderObject))
+
 
 
 class EWM:
@@ -426,8 +435,9 @@ class EWM:
         return self.value
     
 class EWMAbs:
-    def __init__(self, price_alpha=0.002, dev_alpha=0.002):
+    def __init__(self, price_alpha=0.0015, dev_alpha=0.002,long_alpha=0.0001):
         self.price_ema = EWM(alpha=price_alpha) 
+        self.long_ema=EWM(alpha=long_alpha)
         self.deviation_ema = EWM(alpha=dev_alpha) 
 
     def update(self, price):
@@ -443,16 +453,16 @@ class EWMAbs:
 
 
 class InkStrategy(MeanReversion):
-    def __init__(self, symbol, limit,t=1.2,alpha1=0.0005,alpha2=0.2):
+    def __init__(self, symbol, limit,t=1.3,alpha1=0.35,alpha2=0.55,alpha3=0.0001):
         super().__init__(symbol, limit)
-        self.emv=EWMAbs(alpha1,alpha2)
+        self.emv=EWMAbs(alpha1,alpha2,alpha3)
         self.threshold=t
     
     def get_mid_price(self, order, traderObject):
         
         if order.buy_orders and order.sell_orders:
-            best_bid = max(order.buy_orders.keys())
-            best_ask = min(order.sell_orders.keys())
+            best_bid = min(order.buy_orders.keys())
+            best_ask = max(order.sell_orders.keys())
             return (best_bid + best_ask) / 2.0
         else:
             # Fallback or default, if one side of the order book is missing
@@ -480,12 +490,12 @@ class InkStrategy(MeanReversion):
         sell_orders=order_depth.sell_orders
         buy_orders=order_depth.buy_orders
         try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+dev*self.threshold], default=fair+dev*self.threshold)
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+dev*self.threshold])
         except ValueError:
             best_ask_fair = fair+dev*self.threshold
             
         try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair-dev*self.threshold], default=fair-dev*self.threshold)
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair-dev*self.threshold])
         except ValueError:
             best_bid_fair = fair-dev*self.threshold
 
@@ -493,7 +503,7 @@ class InkStrategy(MeanReversion):
             best_ask=min(sell_orders.keys())
             best_ask_amount=-sell_orders[best_ask]
             if best_ask<fair-dev*self.threshold:
-                quant=min(best_ask_amount+dev*self.threshold,position_limit-position)
+                quant=min(best_ask_amount,position_limit-position)
                 if quant>0:
                     self.buy(best_ask,quant)
                     buy_volume+=quant
@@ -501,44 +511,39 @@ class InkStrategy(MeanReversion):
             best_bid = max(buy_orders.keys())
             best_bid_amount = buy_orders[best_bid]
             if best_bid > fair+dev*self.threshold:
-                quant = min(best_bid_amount-dev*self.threshold, position_limit + position)
+                quant = min(best_bid_amount, position_limit + position)
                 if quant > 0:
                     self.sell(best_bid,quant)
                     sell_volume += quant
         
         buy_quant=position_limit-(position+buy_volume)
         if buy_quant>0:
-            self.buy(best_bid_fair-dev*self.threshold,buy_quant)
+            self.buy(best_bid_fair,buy_quant)
 
 
         sell_quant=position_limit+(position-sell_volume)
         if sell_quant>0:
-            self.sell(best_ask_fair +dev*self.threshold,sell_quant)
+            self.sell(best_ask_fair,sell_quant)
 
 
         
 
 
 class Trader:
-    def __init__(self,a1=0.0005,a2=0.3,t=1.85) -> None:
+    def __init__(self) -> None:
         limits = {
             "KELP": 50,
             "RAINFOREST_RESIN": 50,
             "SQUID_INK":50
         }
         self.strategies={}
-        # self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
-        # "KELP": KelpStrategy,
-        #     "RAINFOREST_RESIN": ResinStrategy,
+        self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
+        "KELP": KelpStrategy,
+            "RAINFOREST_RESIN": ResinStrategy,
+            "SQUID_INK":InkStrategy
             
-        # }.items()}
-        self.params={
-            'a1':a1,
-            't':t,
-            'a2':a2
-        }
-
-        self.strategies['SQUID_INK']=InkStrategy('SQUID_INK',50,self.params['t'],self.params['a1'],self.params['a2'])
+        }.items()}
+        
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         orders = {}
         conversions = 0
@@ -574,9 +579,9 @@ if __name__=='__main__':
 
     results={}
 
-    for a1 in [0.2,0.1,0.05,0.01,0.005,0.001,0.0005,0.0001]:
-        for a2 in [0.2,0.1,0.05,0.01,0.005,0.001,0.0005,0.0001]:
-            for t in [1.4,1.5,1.6,1.7,1.8,1.9,2,2.1,2.2]:
+    for a1 in [0.01,0.005,0.001,0.0005,0.0001]:
+        for a2 in [0.2,0.1,0.05,0.01]:
+            for t in [1.8,1.85,1.9]:
                 print(f'TESTING NOW FOR {a1,a2,t}')
                 results[(a1,a2,t)]=run_test_local(Trader(a1,a2,t),'1')
     
