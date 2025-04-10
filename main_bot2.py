@@ -4,10 +4,10 @@ from collections import deque
 from typing import List, Any, TypeAlias, Tuple
 import jsonpickle
 
+
 from datamodel import TradingState, Symbol, Order, Listing, OrderDepth, Trade, Observation, ProsperityEncoder
 
 JSON: TypeAlias = dict[str, "JSON"] | list["JSON"] | str | int | float | bool | None
-
 
 # =======================
 # NOTE: THIS IS BOILERPLATE
@@ -135,6 +135,8 @@ logger = Logger()
 # endregion
 # =======================
 
+position_limit=50
+
 class Strategy:
     def __init__(self, symbol: str, limit: int) -> None:
         self.symbol = symbol
@@ -170,7 +172,6 @@ class Strategy:
         self.last_price = data.get("last_price", None)
         self.window = deque(data.get("window", []))
 
-
 class MarketMaking(Strategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
@@ -182,10 +183,15 @@ class MarketMaking(Strategy):
     def get_fair_price(self, order: OrderDepth, traderObject) -> int:
         raise NotImplementedError
 
+
+    
     def act(self, state: TradingState, traderObject) -> None:
         order_depth = state.order_depths[self.symbol]
 
-        fair_price = self.get_fair_price(order_depth, traderObject)
+        if self.symbol == "KELP":
+            fair_price = self.get_fair_price(order_depth, traderObject)
+        else:
+            fair_price = self.get_fair_price(order_depth, traderObject=None)
 
         # get and sort each side of the order book #
         order_depth = state.order_depths[self.symbol]
@@ -273,19 +279,70 @@ class MarketMaking(Strategy):
 class MeanReversion(MarketMaking):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
+        
+    
+    def act(self,state,traderObject):
 
-    def act(self, state, traderObject):
-        buy_volume = 0
-        sell_volume = 0
-        order_depths = state.order_depths[self.symbol]
+        buy_volume=0
+        sell_volume=0
+        order_depth = state.order_depths[self.symbol]
+        
+        fair= self.get_fair_price(order_depth, traderObject)
 
-        fair = self.get_fair_price(order_depth)
+        # get and sort each side of the order book #
+        order_depth = state.order_depths[self.symbol]
+        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
+        sell_orders = sorted(order_depth.sell_orders.items())
+
+        # get current position and set current position limits #
+        position = state.position.get(self.symbol, 0)
+
+        sell_orders=order_depth.sell_orders
+        buy_orders=order_depth.buy_orders
+        try:
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+1], default=fair+1)
+        except ValueError:
+            best_ask_fair = fair+1
+            
+        try:
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair+1], default=fair-1)
+        except ValueError:
+            best_bid_fair = fair-1
+
+        if sell_orders:
+            best_ask=min(sell_orders.keys())
+            best_ask_amount=-sell_orders[best_ask]
+            if best_ask<fair:
+                quant=min(best_ask_amount,position_limit-position)
+                if quant>0:
+                    self.buy(best_ask,quant)
+                    buy_volume+=quant
+        if buy_orders:
+            best_bid = max(buy_orders.keys())
+            best_bid_amount = buy_orders[best_bid]
+            if best_bid > fair:
+                quant = min(best_bid_amount, position_limit + position)
+                if quant > 0:
+                    self.sell(best_bid,quant)
+                    sell_volume += quant
+        
+        buy_quant=position_limit-(position+buy_volume)
+        if buy_quant>0:
+            self.buy(best_bid_fair+1,buy_quant)
+
+
+        sell_quant=position_limit+(position-sell_volume)
+        if sell_quant>0:
+            self.sell(best_ask_fair - 1,sell_quant)
+
 class KelpStrategy(MarketMaking):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
         self.last_price = None
 
     def get_fair_price(self, order_depth: OrderDepth, traderObject) -> float:
+        traderObject = traderObject
+
         # if there are orders on both side of the book
         if len(order_depth.sell_orders) != 0 and len(order_depth.buy_orders) != 0:
             best_ask = min(order_depth.sell_orders.keys())  # current market best ask
@@ -298,7 +355,7 @@ class KelpStrategy(MarketMaking):
             filtered_ask = [
                 price
                 for price in order_depth.sell_orders.keys()
-                if abs(order_depth.sell_orders[price]) >= 15
+                if abs(order_depth.sell_orders[price]) >= 15  # make this a PARAM later
             ]
             filtered_bid = [
                 price
@@ -332,6 +389,7 @@ class KelpStrategy(MarketMaking):
 
         return None
 
+
     def save(self) -> JSON:
         return {
             "last_price": getattr(self, "last_price", None),
@@ -342,29 +400,141 @@ class KelpStrategy(MarketMaking):
         self.last_price = data.get("last_price", None)
         self.window = deque(data.get("window", []))
 
-
-class ResinStrategy(MarketMaking):
+class ResinStrategy(MeanReversion):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.last_price = None
+        self.ewm=EWM(0.15)
 
-    def get_fair_price(self, state: TradingState, traderObject) -> int:
-        traderObject = traderObject
-        return 10_000
+    def get_mid_price(self, order, traderObject):
+        
+        if order.buy_orders and order.sell_orders:
+            best_bid = min(order.buy_orders.keys())
+            best_ask = max(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+        else:
+            return None 
+    
+    def get_fair_price(self, order, traderObject):
+        return self.ewm.update(self.get_mid_price(order,traderObject))
 
+class InkStrategy(MeanReversion):
+    def __init__(self, symbol, limit, t=0.2, alpha1=0.2, alpha2=0.5, alpha3=0.01):
+        super().__init__(symbol, limit)
+        self.emv = EWMAbs(alpha1, alpha2, alpha3)
+        self.threshold = t
+        self.ema_short = EWM(alpha=0.1)  # 20-tick EMA
+        self.ema_long = EWM(alpha=0.01)  # 100-tick EMA
+        self.recent_prices = deque(maxlen=300)
+        self.trailing_stop_buffer = 0.01  # 1%
+        self.active_trend = None
+        self.entry_price = None
+
+    def get_mid_price(self, order, traderObject):
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+        return None
+
+    def get_fair_price(self, order, traderObject):
+        price = self.get_mid_price(order, traderObject)
+        self.recent_prices.append(price)
+        short_ema = self.ema_short.update(price)
+        long_ema = self.ema_long.update(price)
+        fair, dev, trend = self.emv.update(price)
+        return fair, dev, trend, price, short_ema, long_ema
+    def act(self, state, traderObject):
+        order_depth = state.order_depths[self.symbol]
+        position = state.position.get(self.symbol, 0)
+        fair, dev, trend, price, short_ema, long_ema = self.get_fair_price(order_depth, traderObject)
+
+        buy_orders = order_depth.buy_orders
+        sell_orders = order_depth.sell_orders
+
+        try:
+            best_ask_fair = min([p for p in sell_orders if p > fair + dev * self.threshold])
+        except ValueError:
+            best_ask_fair = fair + dev * self.threshold
+
+        try:
+            best_bid_fair = max([p for p in buy_orders if p < fair - dev * self.threshold])
+        except ValueError:
+            best_bid_fair = fair - dev * self.threshold
+
+        buy_quant = position_limit - position
+        sell_quant = position_limit + position
+
+        # === Mean Reversion Signal ===
+        if trend > fair and buy_quant > 0:
+            self.buy(best_bid_fair - dev * self.threshold, buy_quant)
+        elif trend < fair and sell_quant > 0:
+            self.sell(best_ask_fair + dev * self.threshold, sell_quant)
+
+        # === Momentum Signal via EMA crossover ===
+        if short_ema > long_ema:
+            if self.active_trend != "LONG":
+                self.active_trend = "LONG"
+                self.entry_price = price
+            elif price < self.entry_price * (1 - self.trailing_stop_buffer):
+                self.active_trend = None
+                self.entry_price = None
+        elif short_ema < long_ema:
+            if self.active_trend != "SHORT":
+                self.active_trend = "SHORT"
+                self.entry_price = price
+            elif price > self.entry_price * (1 + self.trailing_stop_buffer):
+                self.active_trend = None
+                self.entry_price = None
+
+        if self.active_trend == "LONG" and buy_quant > 0:
+            self.buy(int(price) + 1, buy_quant)
+        elif self.active_trend == "SHORT" and sell_quant > 0:
+            self.sell(int(price) - 1, sell_quant)
+
+class EWM:
+    def __init__(self,alpha=0.002):
+        self.alpha=alpha
+        self.value=None
+    def update(self,price):
+        if self.value is None:
+            self.value = price 
+        else:
+            self.value = self.alpha * price + (1 - self.alpha) * self.value
+        return self.value
+    
+class EWMAbs:
+    def __init__(self, price_alpha=0.0015, dev_alpha=0.002,long_alpha=0.0001):
+        self.price_ema = EWM(alpha=price_alpha) 
+        self.long_ema=EWM(alpha=long_alpha)
+        self.deviation_ema = EWM(alpha=dev_alpha) 
+
+    def update(self, price):
+
+        ema_price = self.price_ema.update(price)
+        long_ema=self.long_ema.update(price)
+
+
+        abs_deviation = abs(price - ema_price)
+
+        ema_abs_deviation = self.deviation_ema.update(abs_deviation)
+
+        return ema_price, ema_abs_deviation,long_ema
 
 class Trader:
     def __init__(self) -> None:
         limits = {
             "KELP": 50,
             "RAINFOREST_RESIN": 50,
+            "SQUID_INK":50
         }
-
+        self.strategies={}
         self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
             "KELP": KelpStrategy,
-            "RAINFOREST_RESIN": ResinStrategy
+            "RAINFOREST_RESIN": ResinStrategy,
+            "SQUID_INK":InkStrategy
+            
         }.items()}
-
+        
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         orders = {}
         conversions = 0
@@ -392,3 +562,21 @@ class Trader:
 
         logger.flush(state, orders, conversions, trader_data)
         return orders, conversions, trader_data
+    
+
+if __name__=='__main__':
+    from backtester import run_test_local
+    import pandas as pd
+
+    results={}
+
+    for a1 in [0.01,0.005,0.001,0.0005,0.0001]:
+        for a2 in [0.2,0.1,0.05,0.01]:
+            for t in [1.8,1.85,1.9]:
+                print(f'TESTING NOW FOR {a1,a2,t}')
+                results[(a1,a2,t)]=run_test_local(Trader(a1,a2,t),'1')
+    
+    pd.DataFrame(results).to_csv('backtest.csv')
+    
+    
+
