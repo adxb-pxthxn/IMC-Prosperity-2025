@@ -4,7 +4,6 @@ from collections import deque
 from typing import List, Any, TypeAlias, Tuple
 import jsonpickle
 
-
 from datamodel import TradingState, Symbol, Order, Listing, OrderDepth, Trade, Observation, ProsperityEncoder
 
 JSON: TypeAlias = dict[str, "JSON"] | list["JSON"] | str | int | float | bool | None
@@ -281,7 +280,6 @@ class MarketMaking(Strategy):
 class MeanReversion(MarketMaking):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
-        
     
     def act(self,state,traderObject):
 
@@ -289,7 +287,7 @@ class MeanReversion(MarketMaking):
         sell_volume=0
         order_depth = state.order_depths[self.symbol]
         
-        fair= self.get_fair_price(order_depth, traderObject)
+        fair = self.get_fair_price(order_depth, traderObject=None)
 
         # get and sort each side of the order book #
         order_depth = state.order_depths[self.symbol]
@@ -425,28 +423,10 @@ class EWM:
             self.value = self.alpha * price + (1 - self.alpha) * self.value
         return self.value
     
-class EWMAbs:
-    def __init__(self, price_alpha=0.002, dev_alpha=0.002):
-        self.price_ema = EWM(alpha=price_alpha) 
-        self.deviation_ema = EWM(alpha=dev_alpha) 
-
-    def update(self, price):
-
-        ema_price = self.price_ema.update(price)
-
-
-        abs_deviation = abs(price - ema_price)
-
-        ema_abs_deviation = self.deviation_ema.update(abs_deviation)
-
-        return ema_price, ema_abs_deviation
-
-
 class InkStrategy(MeanReversion):
-    def __init__(self, symbol, limit,t=1.2,alpha1=0.0005,alpha2=0.2):
+    def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
-        self.emv=EWMAbs(alpha1,alpha2)
-        self.threshold=t
+        self.emv=EWM(0.001)
     
     def get_mid_price(self, order, traderObject):
         
@@ -461,84 +441,26 @@ class InkStrategy(MeanReversion):
     def get_fair_price(self, order, traderObject):
         return self.emv.update(self.get_mid_price(order,traderObject))
 
-    def act(self,state,traderObject):
-
-        buy_volume=0
-        sell_volume=0
-        order_depth = state.order_depths[self.symbol]
         
-        fair ,dev= self.get_fair_price(order_depth, traderObject)
-
-        # get and sort each side of the order book #
-        order_depth = state.order_depths[self.symbol]
-        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
-        sell_orders = sorted(order_depth.sell_orders.items())
-
-        # get current position and set current position limits #
-        position = state.position.get(self.symbol, 0)
-
-        sell_orders=order_depth.sell_orders
-        buy_orders=order_depth.buy_orders
-        try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+dev*self.threshold], default=fair+1)
-        except ValueError:
-            best_ask_fair = fair+dev
-            
-        try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair-dev*self.threshold], default=fair-1)
-        except ValueError:
-            best_bid_fair = fair-dev
-
-        if sell_orders:
-            best_ask=min(sell_orders.keys())
-            best_ask_amount=-sell_orders[best_ask]
-            if best_ask<fair-dev*self.threshold:
-                quant=min(best_ask_amount,position_limit-position)
-                if quant>0:
-                    self.buy(best_ask,quant)
-                    buy_volume+=quant
-        if buy_orders:
-            best_bid = max(buy_orders.keys())
-            best_bid_amount = buy_orders[best_bid]
-            if best_bid > fair+dev*self.threshold:
-                quant = min(best_bid_amount, position_limit + position)
-                if quant > 0:
-                    self.sell(best_bid,quant)
-                    sell_volume += quant
         
-        # buy_quant=position_limit-(position+buy_volume)
-        # if buy_quant>0:
-        #     self.buy(best_bid_fair-dev*self.threshold,buy_quant)
-
-
-        # sell_quant=position_limit+(position-sell_volume)
-        # if sell_quant>0:
-        #     self.sell(best_ask_fair +dev*self.threshold,sell_quant)
-
-
+        
         
 
 
 class Trader:
-    def __init__(self,a1=0.001,a2=0.02,t=1.8) -> None:
+    def __init__(self) -> None:
         limits = {
             "KELP": 50,
             "RAINFOREST_RESIN": 50,
             "SQUID_INK":50
         }
-        self.strategies={}
-        # self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
-        # "KELP": KelpStrategy,
-        #     "RAINFOREST_RESIN": ResinStrategy,
-            
-        # }.items()}
-        self.params={
-            'a1':a1,
-            't':t,
-            'a2':a2
-        }
 
-        self.strategies['SQUID_INK']=InkStrategy('SQUID_INK',50,self.params['t'],self.params['a1'],self.params['a2'])
+        self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
+            "KELP": KelpStrategy,
+            "RAINFOREST_RESIN": ResinStrategy,
+            "SQUID_INK":InkStrategy
+        }.items()}
+
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         orders = {}
         conversions = 0
@@ -566,21 +488,3 @@ class Trader:
 
         logger.flush(state, orders, conversions, trader_data)
         return orders, conversions, trader_data
-    
-
-if __name__=='__main__':
-    from backtester import run_test_local
-    import pandas as pd
-
-    results={}
-
-    for a1 in [0.2,0.1,0.05,0.01,0.005,0.001,0.0005,0.0001]:
-        for a2 in [0.2,0.1,0.05,0.01,0.005,0.001,0.0005,0.0001]:
-            for t in [1.4,1.5,1.6,1.7,1.8,1.9,2,2.1,2.2]:
-                print(f'TESTING NOW FOR {a1,a2,t}')
-                results[(a1,a2,t)]=run_test_local(Trader(a1,a2,t),'1')
-    
-    pd.DataFrame(results).to_csv('backtest.csv')
-    
-    
-
