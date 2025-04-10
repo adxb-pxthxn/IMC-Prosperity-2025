@@ -454,7 +454,7 @@ class EWMAbs:
 
 
 class InkStrategy(MeanReversion):
-    def __init__(self, symbol, limit,t=0.5,alpha1=0.15,alpha2=0.35,alpha3=0.1):
+    def __init__(self, symbol, limit,t=0.2,alpha1=0.2,alpha2=0.5,alpha3=0.01):
         super().__init__(symbol, limit)
         self.emv=EWMAbs(alpha1,alpha2,alpha3)
         self.threshold=t
@@ -521,12 +521,12 @@ class InkStrategy(MeanReversion):
         
         buy_quant=position_limit-(position+buy_volume)
         if long>fair and buy_quant>0:
-            self.buy(best_bid_fair,buy_quant)
+            self.buy(best_bid_fair-dev*self.threshold,buy_quant)
 
 
         sell_quant=position_limit+(position-sell_volume)
         if long<fair and sell_quant>0:
-            self.sell(best_ask_fair,sell_quant)
+            self.sell(best_ask_fair+dev*self.threshold,sell_quant)
 
 
         
