@@ -454,7 +454,7 @@ class EWMAbs:
 
 
 class InkStrategy(MeanReversion):
-    def __init__(self, symbol, limit,t=0.2,alpha1=0.2,alpha2=0.5,alpha3=0.01):
+    def __init__(self, symbol, limit,t=0.4,alpha1=0.2,alpha2=0.25,alpha3=0.01):
         super().__init__(symbol, limit)
         self.emv=EWMAbs(alpha1,alpha2,alpha3)
         self.threshold=t
