@@ -280,7 +280,6 @@ class MarketMaking(Strategy):
 class MeanReversion(MarketMaking):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
-        
     
     def act(self,state,traderObject):
 
@@ -301,14 +300,14 @@ class MeanReversion(MarketMaking):
         sell_orders=order_depth.sell_orders
         buy_orders=order_depth.buy_orders
         try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+1], default=fair+1)
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair], default=fair+1)
         except ValueError:
-            best_ask_fair = fair+1
+            best_ask_fair = fair
             
         try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair+1], default=fair-1)
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair], default=fair-1)
         except ValueError:
-            best_bid_fair = fair-1
+            best_bid_fair = fair
 
         if sell_orders:
             best_ask=min(sell_orders.keys())
@@ -461,7 +460,7 @@ class EWMAbs:
         return ema_price, ema_abs_deviation,long_ema
 
 
-class InkStrategy(MeanReversion):
+class InkStrategy(MarketMaking):
     def __init__(self, symbol, limit,t=0.4,alpha1=0.2,alpha2=0.25,alpha3=0.01):
         super().__init__(symbol, limit)
         self.emv=EWMAbs(alpha1,alpha2,alpha3)
@@ -469,7 +468,7 @@ class InkStrategy(MeanReversion):
         self.price_history = []
         self.resin_history = []
         self.lambda_ = 0.94  # Decay factor for EWMA risk-free rate estimation
-        self.window_size = 25
+        self.window_size = 100
 
     def store_price_data(self, squid_ink_price, resin_price):
         if squid_ink_price is not None:
@@ -498,9 +497,9 @@ class InkStrategy(MeanReversion):
         return 1 / trading_intervals if trading_intervals > 0 else 1 / self.window_size
 
     def get_fair_price(self, order: OrderDepth, traderObject):
-        est_price, dev, long = self.emv.update(self.get_mid_price(order,traderObject))
+        est_price = self.emv.update(self.get_mid_price(order,traderObject))
         if not order.sell_orders or not order.buy_orders:
-            return est_price, dev, long
+            return est_price
 
         best_ask = min(order.sell_orders.keys())
         best_bid = max(order.buy_orders.keys())
@@ -513,7 +512,7 @@ class InkStrategy(MeanReversion):
         expected_price = mid_price * np.exp(r * T + 0.5 * vol**2 * T)
 
         self.store_price_data(mid_price, traderObject.get("RAINFOREST_RESIN_last_price", None))
-        return expected_price, dev, long
+        return expected_price
 
     def get_mid_price(self, order, traderObject):
         if order.buy_orders and order.sell_orders:
@@ -524,43 +523,6 @@ class InkStrategy(MeanReversion):
             # Fallback or default, if one side of the order book is missing
             return None 
         
-    def act(self,state,traderObject):
-        buy_volume=0
-        sell_volume=0
-        order_depth = state.order_depths[self.symbol]
-
-        
-        fair ,dev,long= self.get_fair_price(order_depth, traderObject)
-
-        # get and sort each side of the order book #
-        order_depth = state.order_depths[self.symbol]
-        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
-        sell_orders = sorted(order_depth.sell_orders.items())
-
-        # get current position and set current position limits #
-        position = state.position.get(self.symbol, 0)
-
-        sell_orders=order_depth.sell_orders
-        buy_orders=order_depth.buy_orders
-        try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+dev*self.threshold])
-        except ValueError:
-            best_ask_fair = fair+dev*self.threshold
-            
-        try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair-dev*self.threshold])
-        except ValueError:
-            best_bid_fair = fair-dev*self.threshold
-
-        buy_quant=position_limit-(position+buy_volume)
-        if long-dev*self.threshold>fair and buy_quant>0:
-            self.buy(best_bid_fair-dev*self.threshold,buy_quant)
-
-
-        sell_quant=position_limit+(position-sell_volume)
-        if long+dev*self.threshold<fair and sell_quant>0:
-            self.sell(best_ask_fair+dev*self.threshold,sell_quant)
-
     def save(self) -> JSON:
         return {
             "price_history": self.price_history,
