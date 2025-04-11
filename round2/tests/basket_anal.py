@@ -232,15 +232,22 @@ def _(curve_fit, diff, np, plt):
 
 
 @app.cell
+def _():
+    return
+
+
+@app.cell
 def _(Polynomial, diff, np, plt):
     def _():
         x = np.arange(len(diff))
-        coeffs = Polynomial.fit(x, diff, deg=4)  # Try deg=2,3,4...
-
+        coeffs = Polynomial.fit(x, diff, deg=5)  # Try deg=2,3,4...
+        print(coeffs)
         plt.plot(diff, label='Residual')
         plt.plot(coeffs(x), label='Poly Fit', linestyle='--')
         plt.legend()
         return plt.show()
+    
+
 
 
     _()

@@ -464,13 +464,23 @@ class Basket1Strat(Strategy):
         
 
         diff=basket-(6*cros+3*jams+dj)
-        signal,exp=self.signal(state.timestamp,diff)
+        signal,exp=self.signal(state.timestamp*0.0002094395102,diff)
 
-        if signal>0:
-            self.buy(exp,self.limit-position)
+        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
+        sell_orders = sorted(order_depth.sell_orders.items())
+
+
+        position = state.position.get(self.symbol, 0)
+
+        sell,buy= max(order_depth.buy_orders.keys()),min(order_depth.sell_orders.keys())
+
+
+
+        if signal>150:
+            self.buy(buy,self.limit-position)
         
-        if signal<0:
-            self.buy(exp,-self.limit-position)
+        if signal<-150:
+            self.buy(sell,-self.limit-position)
         
         logger.print('signal:',signal)
 
@@ -480,7 +490,7 @@ class Basket1Strat(Strategy):
 
 
     def signal(self,value,diff):
-        signal=self.params[0] * np.sin(self.params[1] * value + self.params[2]) + self.params[3]+30000
+        signal=self.params[0] * np.sin(self.params[1] * value + self.params[2]) + self.params[3]
         return signal-diff,signal
         
     
