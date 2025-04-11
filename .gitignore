@@ -155,6 +155,9 @@ dmypy.json
 cython_debug/
 Datasets
 imc-prosperity-3-visualizer-master
+backtests
+.idea
+DS_Store
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
