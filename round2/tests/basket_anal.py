@@ -313,5 +313,29 @@ def _(buffer, diff2, mo, np, plt, window):
     return EWM, ema, ema_10
 
 
+@app.cell
+def _(EWM, diff2, plt):
+    # Create a new EWM instance
+    ewm = EWM(alpha=2 / (3000 + 1))  # match your window size
+
+    # Calculate the signal
+    ema_values = []
+    signal_values = []
+
+    for d in diff2:
+        ema_val = ewm.update(d)
+        ema_values.append(ema_val)
+        signal_values.append(ema_val - d)
+
+    # Plot signal
+    plt.plot(signal_values, label='Signal (EMA - diff)', color='purple')
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+    plt.legend()
+    plt.title("Signal = EMA - diff")
+    plt.show()
+
+    return d, ema_val, ema_values, ewm, signal_values
+
+
 if __name__ == "__main__":
     app.run()

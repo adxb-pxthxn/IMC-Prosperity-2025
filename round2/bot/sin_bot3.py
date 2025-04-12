@@ -446,7 +446,7 @@ class Basket1Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/1000)
+        self.ewm=EWM(1/2000)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -466,32 +466,26 @@ class Basket1Strat(Strategy):
         
 
         diff=basket-(6*cros+3*jams+dj)
-        signal=self.ewm.update(diff)-diff
+        signal = self.ewm.update(diff) - diff
 
-        # position = state.position.get(self.symbol, 0)
+        # Order book for trading GIFT_BASKET
+        order_depth = state.order_depths[self.symbol]
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return
 
-        buy,sell= max(order_depth.buy_orders.keys()),min(order_depth.sell_orders.keys())
-        buy_vol,sell_vol=order_depth.buy_orders[buy],order_depth.sell_orders[sell]
+        buy_price = max(order_depth.buy_orders.keys())
+        sell_price = min(order_depth.sell_orders.keys())
+        buy_vol = order_depth.buy_orders[buy_price]
+        sell_vol = order_depth.sell_orders[sell_price]
 
+        threshold = 50
 
-
-        if signal>32:
-            self.sell(sell,sell_vol)
-        
-        if signal<-32:
-            self.buy(buy,-buy_vol)
-        
-
-
-
-
-
+        if signal > threshold:
+            self.sell(sell_price, sell_vol)
+        elif signal < -threshold:
+            self.buy(buy_price, -buy_vol)
 
 
-    def signal(self,value,diff):
-        signal=self.params[0] * np.sin(self.params[1] * value + self.params[2]) + self.params[3]
-        return signal-diff,signal
-        
     
 
 
@@ -501,7 +495,7 @@ class Basket2Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/1000)
+        self.ewm=EWM(1/2000)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -520,22 +514,28 @@ class Basket2Strat(Strategy):
         cros,jams=self.get_mid_price(state.order_depths['CROISSANTS']),self.get_mid_price(state.order_depths['JAMS'])
         
 
-        diff=basket-(4*cros+2*jams)
-        signal=self.ewm.update(diff)-diff
 
-        # position = state.position.get(self.symbol, 0)
-
-        buy,sell= max(order_depth.buy_orders.keys()),min(order_depth.sell_orders.keys())
-        buy_vol,sell_vol=order_depth.buy_orders[buy],order_depth.sell_orders[sell]
+        diff = basket - (4 * cros + 2 * jams)
 
 
+        signal = self.ewm.update(diff) - diff
 
-        if signal>110:
-            self.sell(sell,sell_vol)
-        
-        if signal<-50:
-            self.buy(buy,-buy_vol)
-        
+        # Order book for trading GIFT_BASKET
+        order_depth = state.order_depths[self.symbol]
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return
+
+        buy_price = max(order_depth.buy_orders.keys())
+        sell_price = min(order_depth.sell_orders.keys())
+        buy_vol = order_depth.buy_orders[buy_price]
+        sell_vol = order_depth.sell_orders[sell_price]
+
+        threshold = 50
+
+        if signal > threshold:
+            self.sell(sell_price, sell_vol)
+        elif signal < -threshold:
+            self.buy(buy_price, -buy_vol)
 
 
 
@@ -543,10 +543,7 @@ class Basket2Strat(Strategy):
 
 
 
-    def signal(self,value,diff):
-        signal=self.params[0] * np.sin(self.params[1] * value + self.params[2]) + self.params[3]
-        return signal-diff,signal
-        
+
     
         
         
