@@ -446,7 +446,7 @@ class Basket1Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/2000)
+        self.ewm=EWM(1/1000)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -475,10 +475,10 @@ class Basket1Strat(Strategy):
 
 
 
-        if signal>40:
+        if signal>32:
             self.sell(sell,sell_vol)
         
-        if signal<-40:
+        if signal<-32:
             self.buy(buy,-buy_vol)
         
 
@@ -495,7 +495,59 @@ class Basket1Strat(Strategy):
     
 
 
+class Basket2Strat(Strategy):
 
+    def __init__(self, symbol, limit):
+        super().__init__(symbol, limit)   
+        self.window = deque()
+        self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
+        self.ewm=EWM(1/1000)
+    
+    def get_mid_price(self, order, traderObject=None):
+        
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+    
+    def act(self,state,traderObject):
+
+        order_depth = state.order_depths[self.symbol]
+        # position=state.position.get(self.symbol, 0)
+        
+        basket=self.get_mid_price(order_depth)
+
+        cros,jams=self.get_mid_price(state.order_depths['CROISSANTS']),self.get_mid_price(state.order_depths['JAMS'])
+        
+
+        diff=basket-(4*cros+2*jams)
+        signal=self.ewm.update(diff)-diff
+
+        # position = state.position.get(self.symbol, 0)
+
+        buy,sell= max(order_depth.buy_orders.keys()),min(order_depth.sell_orders.keys())
+        buy_vol,sell_vol=order_depth.buy_orders[buy],order_depth.sell_orders[sell]
+
+
+
+        if signal>110:
+            self.sell(sell,sell_vol)
+        
+        if signal<-50:
+            self.buy(buy,-buy_vol)
+        
+
+
+
+
+
+
+
+    def signal(self,value,diff):
+        signal=self.params[0] * np.sin(self.params[1] * value + self.params[2]) + self.params[3]
+        return signal-diff,signal
+        
+    
         
         
         
@@ -508,14 +560,16 @@ class Trader:
             "KELP": 50,
             "RAINFOREST_RESIN": 50,
             "SQUID_INK":50,
-            "PICNIC_BASKET1":60
+            "PICNIC_BASKET1":60,
+            "PICNIC_BASKET2":100
         }
 
         self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
             # "KELP": KelpStrategy,
             # "RAINFOREST_RESIN": ResinStrategy,
-            # "SQUID_INK":InkStrategy,
-            "PICNIC_BASKET1":Basket1Strat
+            # # "SQUID_INK":InkStrategy,
+            "PICNIC_BASKET1":Basket1Strat,
+            "PICNIC_BASKET2":Basket2Strat
 
         }.items()}
 
