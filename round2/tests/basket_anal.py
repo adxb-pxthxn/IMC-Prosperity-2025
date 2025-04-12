@@ -254,5 +254,39 @@ def _(Polynomial, diff, np, plt):
     return
 
 
+@app.cell
+def _(diff, np, plt):
+    def moving_average(x, window=5):
+        return np.convolve(x, np.ones(window)/window, mode='valid')
+
+    # Calculate moving average
+    ma = moving_average(diff, window=5000)
+
+    def ema(data, window):
+        alpha = 2 / (window + 1)
+        ema_values = np.zeros_like(data)
+        ema_values[0] = data[0]  # initialize
+        for t in range(1, len(data)):
+            ema_values[t] = alpha * data[t] + (1 - alpha) * ema_values[t - 1]
+        return ema_values
+
+    ema_10 = ema(diff, window=2500
+                )
+
+    plt.plot(diff, label='Original')
+    plt.plot(ema_10, label='EMA (window=10)', color='red')
+    plt.legend()
+    plt.title("Exponential Moving Average")
+    plt.show()
+    # Plot
+    plt.plot(diff, label='Original')
+    plt.plot(np.arange(len(ma)) + 10//2, ma, label='Moving Average (window=10)', color='orange')
+    plt.legend()
+    plt.title("Moving Average of NumPy Array")
+    plt.show()
+
+    return ema, ema_10, ma, moving_average
+
+
 if __name__ == "__main__":
     app.run()

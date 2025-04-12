@@ -413,7 +413,7 @@ class ResinStrategy(MeanReversion):
 
 
 class EWM:
-    def __init__(self,alpha=0.002):
+    def __init__(self,alpha=0.001):
         self.alpha=alpha
         self.value=None
     def update(self,price):
@@ -444,7 +444,9 @@ class Basket1Strat(Strategy):
 
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)   
+        self.window = deque()
         self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
+        self.ewm=EWM(1/2000)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -456,7 +458,7 @@ class Basket1Strat(Strategy):
     def act(self,state,traderObject):
 
         order_depth = state.order_depths[self.symbol]
-        position=state.position.get(self.symbol, 0)
+        # position=state.position.get(self.symbol, 0)
         
         basket=self.get_mid_price(order_depth)
 
@@ -464,25 +466,22 @@ class Basket1Strat(Strategy):
         
 
         diff=basket-(6*cros+3*jams+dj)
-        signal,exp=self.signal(state.timestamp*0.0002094395102,diff)
+        signal=self.ewm.update(diff)-diff
 
-        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
-        sell_orders = sorted(order_depth.sell_orders.items())
+        # position = state.position.get(self.symbol, 0)
 
-
-        position = state.position.get(self.symbol, 0)
-
-        sell,buy= max(order_depth.buy_orders.keys()),min(order_depth.sell_orders.keys())
+        buy,sell= max(order_depth.buy_orders.keys()),min(order_depth.sell_orders.keys())
+        buy_vol,sell_vol=order_depth.buy_orders[buy],order_depth.sell_orders[sell]
 
 
 
-        if signal>150:
-            self.buy(buy,self.limit-position)
+        if signal>40:
+            self.sell(sell,sell_vol)
         
-        if signal<-150:
-            self.buy(sell,-self.limit-position)
+        if signal<-40:
+            self.buy(buy,-buy_vol)
         
-        logger.print('signal:',signal)
+
 
 
 
@@ -541,7 +540,7 @@ class Trader:
                 orders[symbol] = strategy_orders
                 conversions += sum(strategy_conversions)
 
-            # new_trader_data[symbol] = strategy.save()
+            new_trader_data[symbol] = strategy.save()
 
         trader_data = json.dumps(new_trader_data, separators=(",", ":"))
 
