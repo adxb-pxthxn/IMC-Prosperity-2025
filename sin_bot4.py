@@ -426,7 +426,7 @@ class EWM:
 class InkStrategy(MeanReversion):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
-        self.emv=EWM(0.001)
+        self.emv=EWM(1/4500)
     
     def get_mid_price(self, order, traderObject):
         
@@ -445,8 +445,8 @@ class Basket1Strat(Strategy):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)   
         self.window = deque()
-        self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/2500)
+        self.params=[  0.99   , 0.98 ,0.98 , 0.98]
+        self.ewm=EWM(1/2400)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -494,8 +494,8 @@ class Basket2Strat(Strategy):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)   
         self.window = deque()
-        self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/2500)
+        self.params=[  0.99   , 0.98 ,0.98 , 0.98]
+        self.ewm=EWM(1/2300)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -507,7 +507,7 @@ class Basket2Strat(Strategy):
     def act(self,state,traderObject):
 
         order_depth = state.order_depths[self.symbol]
-        # position=state.position.get(self.symbol, 0)
+        
         
         basket=self.get_mid_price(order_depth)
 
@@ -558,16 +558,16 @@ class Trader:
             "RAINFOREST_RESIN": 50,
             "SQUID_INK":50,
             "PICNIC_BASKET1":60,
-            "PICNIC_BASKET2":100
+            "PICNIC_BASKET2":100,
+            "DJEMBES":60
         }
 
         self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
-            # "KELP": KelpStrategy,
-            # "RAINFOREST_RESIN": ResinStrategy,
-            # # "SQUID_INK":InkStrategy,
+            "KELP": KelpStrategy,
+            "RAINFOREST_RESIN": ResinStrategy,
+            "SQUID_INK":InkStrategy,
             "PICNIC_BASKET1":Basket1Strat,
-            "PICNIC_BASKET2":Basket2Strat
-
+            "PICNIC_BASKET2":Basket2Strat,
         }.items()}
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
