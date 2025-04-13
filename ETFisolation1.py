@@ -513,7 +513,7 @@ class JamStrategy(Strategy):
     def __init__(self, symbol: str, limit: int):
         super().__init__(symbol, limit)
         self.prices = deque(maxlen=20)  # price window for JAMS
-        self.alpha = 0.2  # signal threshold to act
+        self.alpha = 0.1  # signal threshold to act
 
     def update_signal(self, price: float) -> float:
         self.prices.append(price)   # append cur price to window
@@ -548,6 +548,97 @@ class JamStrategy(Strategy):
     def load(self, data: JSON) -> None:
         self.prices = deque(data if data else [], maxlen=20)
 
+
+class Basket1Strat(Strategy):
+
+    def __init__(self, symbol, limit):
+        super().__init__(symbol, limit)
+        self.window = deque()
+        self.params = [0.99, 0.98, 0.98, 0.98]
+        self.ewm = EWM(1 / 2400)
+
+    def get_mid_price(self, order, traderObject=None):
+
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+
+    def act(self, state, traderObject):
+
+        order_depth = state.order_depths[self.symbol]
+        # position=state.position.get(self.symbol, 0)
+
+        basket = self.get_mid_price(order_depth)
+
+        cros, jams, dj = self.get_mid_price(state.order_depths['CROISSANTS']), self.get_mid_price(
+            state.order_depths['JAMS']), self.get_mid_price(state.order_depths['DJEMBES'])
+
+        diff = basket - (6 * cros + 3 * jams + dj)
+        signal = self.ewm.update(diff) - diff
+
+        # Order book for trading GIFT_BASKET
+        order_depth = state.order_depths[self.symbol]
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return
+
+        buy_price = max(order_depth.buy_orders.keys())
+        sell_price = min(order_depth.sell_orders.keys())
+        buy_vol = order_depth.buy_orders[buy_price]
+        sell_vol = order_depth.sell_orders[sell_price]
+
+        threshold = 35
+
+        if signal > threshold:
+            self.sell(sell_price, sell_vol)
+        elif signal < -threshold:
+            self.buy(buy_price, -buy_vol)
+
+
+class Basket2Strat(Strategy):
+
+    def __init__(self, symbol, limit):
+        super().__init__(symbol, limit)
+        self.window = deque()
+        self.params = [0.99, 0.98, 0.98, 0.98]
+        self.ewm = EWM(1 / 2300)
+
+    def get_mid_price(self, order, traderObject=None):
+
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+
+    def act(self, state, traderObject):
+
+        order_depth = state.order_depths[self.symbol]
+
+        basket = self.get_mid_price(order_depth)
+
+        cros, jams = self.get_mid_price(state.order_depths['CROISSANTS']), self.get_mid_price(
+            state.order_depths['JAMS'])
+
+        diff = basket - (4 * cros + 2 * jams)
+
+        signal = self.ewm.update(diff) - diff
+
+        # Order book for trading GIFT_BASKET
+        order_depth = state.order_depths[self.symbol]
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return
+
+        buy_price = max(order_depth.buy_orders.keys())
+        sell_price = min(order_depth.sell_orders.keys())
+        buy_vol = order_depth.buy_orders[buy_price]
+        sell_vol = order_depth.sell_orders[sell_price]
+
+        threshold = 35
+
+        if signal > threshold:
+            self.sell(sell_price, sell_vol)
+        elif signal < -threshold:
+            self.buy(buy_price, -buy_vol)
 
 class EWM:
     def __init__(self, alpha=0.002):
@@ -586,7 +677,9 @@ class Trader:
             "KELP": KelpStrategy,
             "RAINFOREST_RESIN": ResinStrategy,
             "SQUID_INK": InkStrategy,
-            "JAMS": JamStrategy
+            "JAMS": JamStrategy,
+            "PICNIC_BASKET1": Basket1Strat,
+            "PICNIC_BASKET2": Basket2Strat
         }.items()}
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
