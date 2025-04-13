@@ -229,6 +229,8 @@ class MarketMaking(Strategy):
                 len(self.window) == self.window_size and
                 all(self.window)
         )
+        if (fair_price == None):
+            return
 
         # calculate max buy and min sell prices, if inventory less than limit/2
         max_buy_price = fair_price - 1 if position > self.limit * 0.5 else fair_price
@@ -435,78 +437,104 @@ class ResinStrategy(MeanReversion):
         self.last_price = data.get("last_price", None)
 
 
-class InkStrategy(MarketMaking):
-    def __init__(self, symbol, limit, t=0.4, alpha1=0.2, alpha2=0.25, alpha3=0.01):
+class SquidInkStrategy(MarketMaking):
+    def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.emv = EWMAbs(alpha1, alpha2, alpha3)
-        self.threshold = t
+        self.last_price = None
         self.price_history = []
-        self.resin_history = []
-        self.lambda_ = 0.94  # Decay factor for EWMA risk-free rate estimation
-        self.window_size = 100
+        self.tickCount = 0
+        self.last_trade_time = -1000
+        self.window_size = 75
 
-    def store_price_data(self, squid_ink_price, resin_price):
-        if squid_ink_price is not None:
-            self.price_history.append(squid_ink_price)
-        if resin_price is not None:
-            self.resin_history.append(resin_price)
-
-        self.price_history = self.price_history[-self.window_size:]
-        self.resin_history = self.resin_history[-self.window_size:]
-
-    def calculate_realized_volatility(self, prices):
+    def compute_volatility(self, prices: list[float]) -> float:
         if len(prices) < 2:
-            return 0
-        log_returns = np.log(np.array(prices[1:]) / np.array(prices[:-1]))
-        return np.sqrt(np.sum(log_returns ** 2))  # Intraday realized volatility
+            return 0.0
+        returns = np.diff(prices) / prices[:-1]
+        return np.std(returns)
 
-    def estimate_risk_free_rate(self):
-        if len(self.resin_history) < 2:
-            return 0
-        log_returns = np.log(np.array(self.resin_history[1:]) / np.array(self.resin_history[:-1]))
-        ewma_r = np.mean(log_returns) * self.window_size  # Annualized, but could be shorter term
-        return ewma_r * self.lambda_ + (1 - self.lambda_) * log_returns[-1]
+    def should_quote(
+        self,
+        order_depth: OrderDepth,
+        vol: float,
+        mm_ask: float,
+        mm_bid: float
+    ) -> bool:
+        if mm_ask is None or mm_bid is None:
+            return False
+        if len(order_depth.sell_orders) < 2 or len(order_depth.buy_orders) < 2:
+            return False
+        if vol > 0.02:
+            return False
+        
+        self.tickCount += 1
 
-    def estimate_time_to_maturity(self):
-        trading_intervals = min(len(self.price_history), self.window_size)
-        return 1 / trading_intervals if trading_intervals > 0 else 1 / self.window_size
+        cooldown_ms = 15
+        if self.tickCount < self.last_trade_time + cooldown_ms:
+            return False
+        self.last_trade_time = self.tickCount
+        return True
 
-    def get_fair_price(self, order: OrderDepth, traderObject):
-        est_price = self.emv.update(self.get_mid_price(order, traderObject))
-        if not order.sell_orders or not order.buy_orders:
-            return est_price
+    def get_fair_price(self, order_depth: OrderDepth, traderObject) -> float:
+        traderObject = traderObject
+        min_volume = 15
 
-        best_ask = min(order.sell_orders.keys())
-        best_bid = max(order.buy_orders.keys())
-        mid_price = (best_ask + best_bid) / 2
-
-        vol = self.calculate_realized_volatility(self.price_history)
-        r = self.estimate_risk_free_rate()
-        T = self.estimate_time_to_maturity()
-
-        expected_price = mid_price * np.exp(r * T + 0.5 * vol ** 2 * T)
-
-        self.store_price_data(mid_price, traderObject.get("RAINFOREST_RESIN_last_price", None))
-        return expected_price
-
-    def get_mid_price(self, order, traderObject):
-        if order.buy_orders and order.sell_orders:
-            best_bid = max(order.buy_orders.keys())
-            best_ask = min(order.sell_orders.keys())
-            return (best_bid + best_ask) / 2.0
-        else:
-            # Fallback or default, if one side of the order book is missing
+        if len(order_depth.sell_orders) == 0 or len(order_depth.buy_orders) == 0:
             return None
 
-    def save(self) -> JSON:
-        return {
-            "price_history": self.price_history,
-            "resin_history": self.resin_history
-        }
+        best_ask = min(order_depth.sell_orders.keys())
+        best_bid = max(order_depth.buy_orders.keys())
 
-    def load(self, data: JSON) -> None:
-        self.price_history = list(data.get("price_history", []))
-        self.resin_history = list(data.get("resin_history", []))
+        filtered_ask = [
+            price for price, volume in order_depth.sell_orders.items()
+            if abs(volume) >= min_volume
+        ]
+        filtered_bid = [
+            price for price, volume in order_depth.buy_orders.items()
+            if abs(volume) >= min_volume
+        ]
+
+        mm_ask = min(filtered_ask) if filtered_ask else None
+        mm_bid = max(filtered_bid) if filtered_bid else None
+
+        if mm_ask is None or mm_bid is None:
+            mid_price = traderObject.get("SQUID_last_price", (best_ask + best_bid) / 2)
+        else:
+            mid_price = (mm_ask + mm_bid) / 2
+
+        self.price_history.append(mid_price)
+        if len(self.price_history) > self.window_size:
+            self.price_history.pop(0)
+
+        vol = self.compute_volatility(self.price_history)
+        vol = max(vol, 0.0001)
+
+        alpha = max(0.05, 0.3 - vol * 10)
+        beta = max(0.05, 0.25 - vol * 10)
+        spread_padding = vol * 1000
+
+        historical_mean = sum(self.price_history) / len(self.price_history)
+        deviation = mid_price - historical_mean
+
+        if self.last_price:
+            ret = (mid_price - self.last_price) / self.last_price
+        else:
+            ret = 0.0
+
+        if (deviation > 0 and ret < 0) or (deviation < 0 and ret > 0):
+            reversion_adjustment = -alpha * deviation
+        else:
+            reversion_adjustment = 0.0
+
+        momentum_adjustment = -ret * beta * mid_price
+
+
+        if not self.should_quote(order_depth, vol, mm_ask, mm_bid):
+            return None
+
+        fair_price = mid_price + reversion_adjustment + momentum_adjustment - spread_padding
+
+        self.last_price = mid_price
+        return fair_price
 
 
 class JamStrategy(Strategy):
@@ -585,7 +613,7 @@ class Trader:
         self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {
             "KELP": KelpStrategy,
             "RAINFOREST_RESIN": ResinStrategy,
-            "SQUID_INK": InkStrategy,
+            "SQUID_INK": SquidInkStrategy,
             "JAMS": JamStrategy
         }.items()}
 
