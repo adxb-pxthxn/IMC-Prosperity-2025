@@ -446,7 +446,7 @@ class Basket1Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/2500)
+        self.ewm=EWM(1/2400)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -478,7 +478,7 @@ class Basket1Strat(Strategy):
         buy_vol = order_depth.buy_orders[buy_price]
         sell_vol = order_depth.sell_orders[sell_price]
 
-        threshold = 35
+        threshold = 40
 
         if signal > threshold:
             self.sell(sell_price, sell_vol)
@@ -495,7 +495,7 @@ class Basket2Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[  81.3969752    , 2.27462546 ,-151.1450804 ,   44.50646418]
-        self.ewm=EWM(1/2500)
+        self.ewm=EWM(1/2400)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -530,7 +530,7 @@ class Basket2Strat(Strategy):
         buy_vol = order_depth.buy_orders[buy_price]
         sell_vol = order_depth.sell_orders[sell_price]
 
-        threshold = 35
+        threshold = 40
 
         if signal > threshold:
             self.sell(sell_price, sell_vol)
