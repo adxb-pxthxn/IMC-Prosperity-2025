@@ -457,19 +457,11 @@ class SquidInkStrategy(MarketMaking):
         return np.std(returns)
 
     def should_quote(
-<<<<<<< HEAD:ClairoHMU.py
-            self,
-            order_depth: OrderDepth,
-            vol: float,
-            mm_ask: float,
-            mm_bid: float
-=======
         self,
         order_depth: OrderDepth,
         vol: float,
         mm_ask: float,
         mm_bid: float
->>>>>>> ETFisolation:ETFisolation1.py
     ) -> bool:
         if mm_ask is None or mm_bid is None:
             return False
@@ -477,21 +469,6 @@ class SquidInkStrategy(MarketMaking):
             return False
         if vol > 0.02:
             return False
-<<<<<<< HEAD:ClairoHMU.py
-
-        self.tickCount += 1
-
-        cooldown_ms = 15
-        if self.tickCount < self.last_trade_time + cooldown_ms:
-            return False
-        self.last_trade_time = self.tickCount
-        return True
-
-    def get_fair_price(self, order_depth: OrderDepth, traderObject) -> float:
-        traderObject = traderObject
-        min_volume = 15
-
-=======
         
         self.tickCount += 1
 
@@ -505,7 +482,6 @@ class SquidInkStrategy(MarketMaking):
         traderObject = traderObject
         min_volume = 15
 
->>>>>>> ETFisolation:ETFisolation1.py
         if len(order_depth.sell_orders) == 0 or len(order_depth.buy_orders) == 0:
             return None
 
@@ -555,10 +531,6 @@ class SquidInkStrategy(MarketMaking):
 
         momentum_adjustment = -ret * beta * mid_price
 
-<<<<<<< HEAD:ClairoHMU.py
-=======
-
->>>>>>> ETFisolation:ETFisolation1.py
         if not self.should_quote(order_depth, vol, mm_ask, mm_bid):
             return None
 
@@ -737,13 +709,7 @@ class Trader:
             "KELP": KelpStrategy,
             "RAINFOREST_RESIN": ResinStrategy,
             "SQUID_INK": SquidInkStrategy,
-<<<<<<< HEAD:ClairoHMU.py
-            "JAMS": JamStrategy,
-            "PICNIC_BASKET1": Basket1Strat,
-            "PICNIC_BASKET2": Basket2Strat
-=======
             "JAMS": JamStrategy
->>>>>>> ETFisolation:ETFisolation1.py
         }.items()}
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
