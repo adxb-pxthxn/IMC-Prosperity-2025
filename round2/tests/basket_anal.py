@@ -1,7 +1,11 @@
 import marimo
 
 __generated_with = "0.12.7"
-app = marimo.App(width="full", app_title="Analysis")
+app = marimo.App(
+    width="full",
+    app_title="Analysis",
+    layout_file="layouts/basket_anal.grid.json",
+)
 
 
 @app.cell(hide_code=True)
@@ -23,7 +27,8 @@ def _():
     import numpy as np
     from scipy.optimize import curve_fit
     from numpy.polynomial.polynomial import Polynomial
-    return Polynomial, curve_fit, np, pd, plt
+    import math
+    return Polynomial, curve_fit, math, np, pd, plt
 
 
 @app.cell
@@ -44,11 +49,42 @@ def _(d1, d2, d3, pd):
 
 
 @app.cell
-def _(combined, plt):
-    basket = combined[combined['product'] == 'PICNIC_BASKET1']['mid_price'].values
-    dj = combined[combined['product'] == 'DJEMBES']['mid_price'].values
-    cros = combined[combined['product'] == 'CROISSANTS']['mid_price'].values
-    jam = combined[combined['product'] == 'JAMS']['mid_price'].values
+def _(math, np, pd):
+    def get_popular_price(row, bid_ask: str) -> int:
+        best_price = -1
+        max_volume = -1
+
+        for i in range(1, 4):
+            volume = getattr(row, f"{bid_ask}_volume_{i}")
+            if math.isnan(volume):
+                break
+
+            if volume > max_volume:
+                best_price = getattr(row, f"{bid_ask}_price_{i}")
+                max_volume = volume
+
+        return best_price
+
+    def get_product_prices(prices: pd.DataFrame, product: str) -> np.ndarray:
+        prices = prices[prices["product"] == product]
+
+        mid_prices = []
+        for row in prices.itertuples():
+            popular_buy_price = get_popular_price(row, "bid")
+            popular_sell_price = get_popular_price(row, "ask")
+            mid_prices.append((popular_buy_price + popular_sell_price) / 2)
+
+        return np.array(mid_prices)
+
+    return get_popular_price, get_product_prices
+
+
+@app.cell
+def _(combined, get_product_prices, plt):
+    basket = get_product_prices(combined,'PICNIC_BASKET1')
+    dj = get_product_prices(combined,'DJEMBES')
+    cros = get_product_prices(combined,'CROISSANTS')
+    jam = get_product_prices(combined,'JAMS')
 
     basket_add =dj + cros * 6 + jam*3
 
@@ -56,9 +92,11 @@ def _(combined, plt):
     plt.plot(basket,label='Actual',alpha=0.5)
     plt.plot(basket_add,label='Theo',linestyle="--",color='red',linewidth=2)
 
-    plt.ylim([min(basket.min(), basket_add.min()), max(basket.max(), basket_add.max())])
+
     plt.legend()
     plt.show()
+
+
     return basket, basket_add, cros, dj, jam
 
 
@@ -89,8 +127,15 @@ def _(combined, cros, jam, plt):
 
 
 @app.cell
-def _(basket, basket_add, plt):
-    diff = basket - basket_add
+def _(diff, diff2):
+    (diff.mean(),diff.std()),(diff2.mean(),diff2.std())
+    (diff.mean(),diff.std()),(diff2.mean(),diff2.std())
+    return
+
+
+@app.cell
+def _(basket, basket_add, np, plt):
+    diff = np.array(basket) - np.array(basket_add)
     plt.plot(diff, label='Residual (Actual - Theo)')
     plt.hlines(diff.mean(), xmin=0, xmax=len(diff)-1, colors='red', linestyles='--', label='Mean Residual')
     plt.legend()
@@ -224,11 +269,6 @@ def _(curve_fit, diff, np, plt):
 
 
 @app.cell
-def _():
-    return
-
-
-@app.cell
 def _(Polynomial, diff, np, plt):
     def _():
         x = np.arange(len(diff))
@@ -267,6 +307,57 @@ def _(buffer, mo, window):
 
 
 @app.cell
+def _(EWM, diff2, np, plt):
+    # Create a new EWM instance
+    ewm = EWM(alpha=1 / (2401))  # match your window size
+
+    # Calculate the signal
+    ema_values = []
+    signal_values = []
+
+    for d in diff2:
+        ema_val = ewm.update(d)
+        ema_values.append(ema_val)
+        signal_values.append(ema_val - d)
+
+    # Plot signal
+    plt.plot(signal_values, label='Signal (EMA - diff)', color='purple')
+    plt.axhline(np.array(signal_values).mean(), color='gray', linestyle='--', linewidth=1)
+    plt.legend()
+    plt.title("Signal = EMA - diff")
+    plt.show()
+    return d, ema_val, ema_values, ewm, signal_values
+
+
+@app.cell
+def _(basket, dj, np):
+    a = np.array(dj) 
+    b = np.array(basket) 
+
+    corr = np.corrcoef(a, b)[0, 1]
+    print(f"Correlation: {corr:.4f}")
+    return a, b, corr
+
+
+app._unparsable_cell(
+    r"""
+    def _():
+        def _():
+            a = np.array(jam) 
+            b = np.array(basket) 
+
+            corr = np.corrcoef(a, b)[0, 1]
+        return _()
+            return print(f\"Correlation: {corr:.4f}\")
+
+
+    _()
+    """,
+    name="_"
+)
+
+
+@app.cell
 def _(buffer, diff2, mo, np, plt, window):
     class EWM:
         def __init__(self,alpha=0.001):
@@ -293,7 +384,7 @@ def _(buffer, diff2, mo, np, plt, window):
     def _():
         plt.plot(diff2, label='Original',color='white', linestyle="--",alpha=0.5)
         plt.plot(ema_10, label='EMA (window=3000)', color='blue')
-    
+
         # Add shaded buffer around the EMA line
         plt.fill_between(
             np.arange(len(ema_10)),
@@ -303,38 +394,43 @@ def _(buffer, diff2, mo, np, plt, window):
             alpha=0.5,
             label='±10 buffer'
         )
-    
+
         plt.legend()
         plt.title("Exponential Moving Average with ±10 Buffer")
         return plt.gca()
 
     _()
-
     return EWM, ema, ema_10
 
 
 @app.cell
-def _(EWM, diff2, plt):
-    # Create a new EWM instance
-    ewm = EWM(alpha=2 / (3000 + 1))  # match your window size
+def _(basket, cros, np):
+    def _():
+        a = np.array(cros) 
+        b = np.array(basket) 
 
-    # Calculate the signal
-    ema_values = []
-    signal_values = []
+        corr = np.corrcoef(a, b)[0, 1]
+        return print(f"Correlation: {corr:.4f}")
 
-    for d in diff2:
-        ema_val = ewm.update(d)
-        ema_values.append(ema_val)
-        signal_values.append(ema_val - d)
 
-    # Plot signal
-    plt.plot(signal_values, label='Signal (EMA - diff)', color='purple')
-    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
-    plt.legend()
-    plt.title("Signal = EMA - diff")
-    plt.show()
+    _()
+    return
 
-    return d, ema_val, ema_values, ewm, signal_values
+
+@app.cell
+def _(basket, diff, np):
+    def _():
+        def _():
+            a = np.array(basket) 
+            b = np.array(diff) 
+
+            corr = np.corrcoef(a, b)[0, 1]
+            return print(f"Correlation: {corr:.4f}")
+        return _()
+
+
+    _()
+    return
 
 
 if __name__ == "__main__":
