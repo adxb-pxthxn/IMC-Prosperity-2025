@@ -742,13 +742,10 @@ class EWMAbs:
 
 
 def rough_iv(S, K, T, C):
-    S = np.asarray(S)
-    K = np.asarray(K)
-    T = np.asarray(T)
-    C = np.asarray(C)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        approx_iv = C / (0.5 * S * np.sqrt(T))
-        approx_iv = np.clip(approx_iv, 0.01, 2.0)
+
+   
+    approx_iv = C / (0.2 * S * np.sqrt(T))
+    approx_iv = np.clip(approx_iv, 0.01, 2.0)
     return approx_iv
 
 class CouponStrategy(Strategy):
@@ -798,36 +795,53 @@ class CouponStrategy(Strategy):
             ):
                 return
 
+        # Retrieve mid prices for both assets
         rock = self.get_mid_price(state.order_depths[base_asset])
         coupon = self.get_mid_price(state.order_depths[self.symbol])
-
-
-        K=int(self.symbol.split('_')[-1])
-
         if rock is None or coupon is None:
             return
 
+        # Extract strike price from symbol, e.g., "COUPON_10000" yields strike K=10000
+        K = int(self.symbol.split('_')[-1])
 
-        T = 4/ 365
-        r = 0  
+        # Timing calculations using timestamp
+        mill = 1_000_000
+        timestamp = state.timestamp
+        T = ((8 - (timestamp // (3*mill))) / 365) - (timestamp / mill) / 365
+        r = 0  # risk-free rate
 
-        sigma = rough_iv(rock, K, T, coupon)
+        # --- Incorporate new variables ---
+        # Assume m_t, v_t, base_iv are available from the state or other data sources:
+        # You may have to update these assignments based on your data feed.
+        m_t = traderObject.get("market_trend", 0.466)        # Defaulting to 0 (neutral) if not provided.
+        v_t = traderObject.get("volatility_adjustment", 0.629) # Defaulting to 0 if not provided.
+        base_iv = traderObject.get("base_iv", 0.587)         # Default to the original constant if not provided.
 
+        # Update sigma dynamically based on the base implied volatility and current market volatility signal
+        sigma = base_iv * (1 + v_t)
 
-
+        # Calculate fair value using dynamically adjusted sigma
         fair = self.BS_CALL(rock, K, T, r, sigma)
 
+        # Adjust fair value with the market trend factor m_t
+        fair_adjusted = fair
 
+        # Adjust thresholds based on volatility signal
+        threshold = 2 * (1 + v_t)
+
+        # Retrieve current best orders from the order depth for decision-making
         order_depth = state.order_depths[self.symbol]
         buy_price = max(order_depth.buy_orders.keys())
         sell_price = min(order_depth.sell_orders.keys())
         buy_vol = order_depth.buy_orders[buy_price]
         sell_vol = order_depth.sell_orders[sell_price]
 
-        if coupon > fair +2:
+        # Trading logic: Sell if overvalued, buy if undervalued relative to our adjusted fair value
+        if coupon > fair_adjusted + threshold:
             self.sell(buy_price, buy_vol)
-        elif coupon < fair - 2:
+        elif coupon < fair_adjusted - threshold:
             self.buy(sell_price, sell_vol)
+
 
 
     def save(self) -> JSON:
