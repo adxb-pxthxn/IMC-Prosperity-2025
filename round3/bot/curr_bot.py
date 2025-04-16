@@ -753,6 +753,7 @@ class CouponStrategy(Strategy):
         super().__init__(symbol, limit)
         self.voucher_strikes = [9500, 9750, 10000, 10250, 10500]
         self.smile_window = deque(maxlen=100)
+        self.window=[]
 
 
     def BS_CALL(self, S, K, T, r, sigma):
@@ -801,6 +802,8 @@ class CouponStrategy(Strategy):
         if rock is None or coupon is None:
             return
 
+
+
         # Extract strike price from symbol, e.g., "COUPON_10000" yields strike K=10000
         K = int(self.symbol.split('_')[-1])
 
@@ -837,22 +840,13 @@ class CouponStrategy(Strategy):
         sell_vol = order_depth.sell_orders[sell_price]
 
         # Trading logic: Sell if overvalued, buy if undervalued relative to our adjusted fair value
-        if coupon > fair_adjusted + threshold:
+        if coupon > fair_adjusted:
             self.sell(buy_price, buy_vol)
-        elif coupon < fair_adjusted - threshold:
+        elif coupon < fair_adjusted:
             self.buy(sell_price, sell_vol)
 
 
 
-    def save(self) -> JSON:
-        return {
-            "last_price": getattr(self, "last_price", None),
-            "window": list(self.smile_window)
-        }
-
-    def load(self, data: JSON) -> None:
-        self.last_price = data.get("last_price", None)
-        self.smile_window = deque(data.get("window", deque()))
 
 
 
