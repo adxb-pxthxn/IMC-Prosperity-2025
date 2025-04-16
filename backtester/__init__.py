@@ -220,7 +220,7 @@ def run_test(
         print(f"Backtesting {algorithm} on round {round_num} day {day_num}")
 
         reload(trader_module)
-
+        
         result = run_backtest(
             trader_module.Trader(),
             file_reader,

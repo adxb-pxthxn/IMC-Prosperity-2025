@@ -90,10 +90,11 @@ def enforce_limits(
         total_long = sum(order.quantity for order in product_orders if order.quantity > 0)
         total_short = sum(abs(order.quantity) for order in product_orders if order.quantity < 0)
 
+        
+
         if product_position + total_long > LIMITS[product] or product_position - total_short < -LIMITS[product]:
             sandbox_log_lines.append(f"Orders for product {product} exceeded limit of {LIMITS[product]} set")
             orders.pop(product)
-
     if len(sandbox_log_lines) > 0:
         sandbox_row.sandbox_log += "\n" + "\n".join(sandbox_log_lines)
 
@@ -234,7 +235,7 @@ def match_orders(
         product: [MarketTrade(t, t.quantity, t.quantity) for t in trades]
         for product, trades in data.trades[state.timestamp].items()
     }
-
+    
     for product in data.products:
         new_trades = []
 
@@ -252,7 +253,7 @@ def match_orders(
         if len(new_trades) > 0:
             state.own_trades[product] = new_trades
             result.trades.extend([TradeRow(trade) for trade in new_trades])
-
+    
     for product, trades in market_trades.items():
         for trade in trades:
             trade.trade.quantity = min(trade.buy_quantity, trade.sell_quantity)
@@ -261,6 +262,7 @@ def match_orders(
 
         state.market_trades[product] = remaining_market_trades
         result.trades.extend([TradeRow(trade) for trade in remaining_market_trades])
+    
 
 
 def run_backtest(
@@ -327,7 +329,7 @@ def run_backtest(
         )
 
         result.sandbox_logs.append(sandbox_row)
-
+        
         create_activity_logs(state, data, result)
         enforce_limits(state, data, orders, sandbox_row)
         match_orders(state, data, orders, result, trade_matching_mode)

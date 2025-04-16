@@ -13,6 +13,12 @@ LIMITS = {
     "DJEMBES": 60,
     "PICNIC_BASKET1": 60,
     "PICNIC_BASKET2": 100,
+    "VOLCANIC_ROCK": 400,
+    "VOLCANIC_ROCK_VOUCHER_9500": 200,
+    "VOLCANIC_ROCK_VOUCHER_9750": 200,
+    "VOLCANIC_ROCK_VOUCHER_10000": 200,
+    "VOLCANIC_ROCK_VOUCHER_10250": 200,
+    "VOLCANIC_ROCK_VOUCHER_10500": 200
 }
 
 
@@ -127,5 +133,4 @@ def read_day_data(file_reader: FileReader, round_num: int, day_num: int, no_name
                 )
 
             break
-
     return create_backtest_data(round_num, day_num, prices, trades)
