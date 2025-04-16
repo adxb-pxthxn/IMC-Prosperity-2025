@@ -740,6 +740,17 @@ class EWMAbs:
         return ema_price, ema_abs_deviation, long_ema
 
 
+
+def rough_iv(S, K, T, C):
+    S = np.asarray(S)
+    K = np.asarray(K)
+    T = np.asarray(T)
+    C = np.asarray(C)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        approx_iv = C / (0.5 * S * np.sqrt(T))
+        approx_iv = np.clip(approx_iv, 0.01, 2.0)
+    return approx_iv
+
 class CouponStrategy(Strategy):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
@@ -753,39 +764,29 @@ class CouponStrategy(Strategy):
         d2 = d1 - sigma * math.sqrt(T)
         return S * N(d1) - K * math.exp(-r*T)* N(d2)
 
-    def implied_vol(self, S, K, T, market_price, tol=1e-6, max_iter=100):
-        low, high = 1e-6, 5.0
-        for _ in range(max_iter):
-            mid = (low + high) / 2
-            price = self.BS_CALL(S, K, T, 0, mid)
-            if abs(price - market_price) < tol:
-                return mid
-            if price > market_price:
-                high = mid
-            else:
-                low = mid
-        return np.nan
 
-    def get_mid_price(self, order):
+    def get_mid_price(self, order, traderObject=None):
+
+
         if not (order.buy_orders and order.sell_orders):
-            return None
-        best_bid = max(order.buy_orders.keys())
-        best_ask = min(order.sell_orders.keys())
-        return (best_bid + best_ask) / 2
+            return
 
-    def fit_smile(self, rock_price, voucher_prices, T):
-        m_vals, v_vals = [], []
-        for K, V in zip(self.voucher_strikes, voucher_prices):
-            if np.isnan(V):
-                continue
-            m = np.log(K / rock_price) / np.sqrt(T)
-            iv = self.implied_vol(rock_price, K, T, V)
-            if not np.isnan(iv):
-                m_vals.append(m)
-                v_vals.append(iv)
-        if len(m_vals) >= 3:
-            return np.polyfit(m_vals, v_vals, 2)
-        return None
+
+        best_ask=-1
+        best_bid=-1
+        vol=-1
+
+        for key,val in order.buy_orders.items():
+            if not np.isnan(val) and val>vol:
+                vol=val
+                best_ask=key
+        for key,val in order.sell_orders.items():
+            if not np.isnan(val) and val>vol:
+                vol=val
+                best_bid=key
+
+        return (best_bid+best_ask)/2
+
 
     def act(self, state, traderObject) -> None:
         base_asset = "VOLCANIC_ROCK"
@@ -799,20 +800,23 @@ class CouponStrategy(Strategy):
 
         rock = self.get_mid_price(state.order_depths[base_asset])
         coupon = self.get_mid_price(state.order_depths[self.symbol])
+
+
+        K=int(self.symbol.split('_')[-1])
+
         if rock is None or coupon is None:
             return
 
-        T = 5/ 252
+
+        T = 4/ 365
         r = 0  
 
-        K = 10000
-        m_t = np.log(K / rock) / np.sqrt(T)
+        sigma = rough_iv(rock, K, T, coupon)
 
-        a, b, c = [  2.789278478478306,  -1.8371316000726343,  0.026258038953845278]
-        sigma =max(0.02, min(a * m_t**2 + b * m_t + c, 2.0))
 
 
         fair = self.BS_CALL(rock, K, T, r, sigma)
+
 
         order_depth = state.order_depths[self.symbol]
         buy_price = max(order_depth.buy_orders.keys())
@@ -820,9 +824,9 @@ class CouponStrategy(Strategy):
         buy_vol = order_depth.buy_orders[buy_price]
         sell_vol = order_depth.sell_orders[sell_price]
 
-        if coupon > fair +1:
+        if coupon > fair +2:
             self.sell(buy_price, buy_vol)
-        elif coupon < fair - 1:
+        elif coupon < fair - 2:
             self.buy(sell_price, sell_vol)
 
 

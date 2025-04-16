@@ -173,13 +173,19 @@ def _(norm, np, plt):
 
 
 @app.cell
-def _(np):
+def _(C, curve_fit, np, plt):
     def rough_iv(S, K, T, C):
-        # Rough IV for calls using a shortcut formula
+        # Make all inputs arrays for safe elementwise ops
+        S = np.asarray(S)
+        K = np.asarray(K)
+        T = np.asarray(T)
+        C = np.asarray(C)
+
         with np.errstate(divide='ignore', invalid='ignore'):
             approx_iv = C / (0.4 * S * np.sqrt(T))
-            approx_iv = np.clip(approx_iv, 0, 5)  # clip outliers
-        return approx_iv
+            approx_iv = np.clip(approx_iv, 0, 5)  # reasonable bounds
+
+        return approx_iv  # shape same as C
 
     def process_smile_q(Sts, Ks, TTEs, Vts):
         smiles = []
@@ -198,24 +204,149 @@ def _(np):
             m = np.log(K_array / S) / np.sqrt(T)
             iv = rough_iv(S, K_array, T, V_array)
 
+            if np.isscalar(iv):  # safety check in case scalar still happens
+                iv = np.full_like(m, np.nan)
+
             valid = ~np.isnan(m) & ~np.isnan(iv)
             if np.sum(valid) < 3:
                 smiles.append(None)
                 base_ivs.append(np.nan)
                 continue
 
-            # Fit quadratic v(m) = a m^2 + b m + c
             coeffs = np.polyfit(m[valid], iv[valid], 2)
             smiles.append(coeffs.tolist())
-
-            # Base IV = v(m=0) = c
-            base_ivs.append(coeffs[2])
+            base_ivs.append(coeffs[2])  # v(0) = base IV
 
         return smiles, base_ivs
 
 
+    def process_smile_qf(Sts, Ks, TTEs, Vts):
+        smiles = []
+        base_ivs = []
 
-    return process_smile_q, rough_iv
+        def quad(m, a, b, c):
+            """Quadratic function for curve fitting."""
+            return a * m**2 + b * m + c
+
+        for S, K_list, T, V_list in zip(Sts, Ks, TTEs, Vts):
+            S = float(S)
+            K_array = np.array(K_list)
+            V_array = np.array(V_list)
+
+            if np.any(np.isnan(V_array)) or S <= 0 or T <= 0:
+                smiles.append(None)
+                base_ivs.append(np.nan)
+                continue
+
+            m = np.log(K_array / S) / np.sqrt(T)
+            iv = C / (0.4 * S * np.sqrt(T))  # Rough estimate of implied volatility
+
+            if np.isscalar(iv):  # Safety check in case scalar still happens
+                iv = np.full_like(m, np.nan)
+
+            valid = ~np.isnan(m) & ~np.isnan(iv)
+            if np.sum(valid) < 3:
+                smiles.append(None)
+                base_ivs.append(np.nan)
+                continue
+
+            # Normalize m before fitting
+            m_mean = np.mean(m[valid])
+            m_std = np.std(m[valid]) + 1e-6  # Avoid divide by 0
+            m_scaled = (m[valid] - m_mean) / m_std
+
+            # Fit a quadratic to the valid points
+            try:
+                popt, _ = curve_fit(quad, m_scaled, iv[valid])
+                coeffs = popt
+                base_ivs.append(coeffs[2])  # Base IV is the constant term (c) in the fit
+            except:
+                coeffs = [np.nan, np.nan, np.nan]
+                base_ivs.append(np.nan)
+
+            smiles.append(coeffs.tolist())
+
+            # Plot the result for diagnostics
+            x_plot = np.linspace(m_scaled.min(), m_scaled.max(), 100)
+            y_fit = quad(x_plot, *coeffs)
+
+            plt.scatter(m[valid], iv[valid], label="Data", alpha=0.5)
+            plt.plot(x_plot * m_std + m_mean, y_fit, label="Quadratic Fit", color='red')
+            plt.title(f"Smile fit | S={S:.2f}, T={T:.2f}")
+            plt.xlabel("Moneyness")
+            plt.ylabel("Rough IV")
+            plt.legend()
+            plt.grid(True)
+            plt.show()
+
+        return smiles, base_ivs
+    return process_smile_q, process_smile_qf, rough_iv
+
+
+@app.cell
+def _(curve_fit, np, plt):
+    def process_smile_qfi(Sts, Ks, TTEs, Vts):
+        smiles = []
+        base_ivs = []
+
+        def quad(m, a, b, c):
+            """Quadratic function for curve fitting."""
+            return a * m**2 + b * m + c
+
+        for S, K_list, T, V_list in zip(Sts, Ks, TTEs, Vts):
+            S = float(S)
+            K_array = np.array(K_list)
+            V_array = np.array(V_list)
+
+            if np.any(np.isnan(V_array)) or S <= 0 or T <= 0:
+                smiles.append(None)
+                base_ivs.append(np.nan)
+                continue
+
+            m = np.log(K_array / S) / np.sqrt(T)
+            # Now, V_array represents the option price (C)
+            iv = V_array / (0.4 * S * np.sqrt(T))  # Rough estimate of implied volatility
+
+            if np.isscalar(iv):  # Safety check in case scalar still happens
+                iv = np.full_like(m, np.nan)
+
+            valid = ~np.isnan(m) & ~np.isnan(iv)
+            if np.sum(valid) < 3:
+                smiles.append(None)
+                base_ivs.append(np.nan)
+                continue
+
+            # Normalize m before fitting
+            m_mean = np.mean(m[valid])
+            m_std = np.std(m[valid]) + 1e-6  # Avoid divide by 0
+            m_scaled = (m[valid] - m_mean) / m_std
+
+            # Fit a quadratic to the valid points
+            try:
+                popt, _ = curve_fit(quad, m_scaled, iv[valid])
+                coeffs = popt
+                base_ivs.append(coeffs[2])  # Base IV is the constant term (c) in the fit
+            except:
+                coeffs = [np.nan, np.nan, np.nan]
+                base_ivs.append(np.nan)
+
+            smiles.append(coeffs)
+
+            # Plot the result for diagnostics
+            x_plot = np.linspace(m_scaled.min(), m_scaled.max(), 100)
+            y_fit = quad(x_plot, *coeffs)
+
+            plt.scatter(m[valid], iv[valid], label="Data", alpha=0.5)
+            plt.plot(x_plot * m_std + m_mean, y_fit, label="Quadratic Fit", color='red')
+            plt.title(f"Smile fit | S={S:.2f}, T={T:.2f}")
+            plt.xlabel("Moneyness")
+            plt.ylabel("Rough IV")
+            plt.legend()
+            plt.grid(True)
+            plt.show()
+
+        return smiles, base_ivs
+    return (process_smile_qfi,)
 
 
 @app.cell
@@ -227,10 +358,10 @@ def _(process_smile_q, r1, r2, r3, r4, r5, rock):
     Ks = [[9500, 9750, 10000, 10250, 10500]] * len(rock)
 
     # Time to expiry for each t (assuming constant for now, e.g., 10 trading days left)
-    TTEs = [246 / 365] * len(rock)  # Change if needed
+    TTEs = [4 / 252] * len(rock)  # Change if needed
 
     # All voucher prices
-    Vts = list(zip(r1, r2, r3, r4, r5))  # Each row = [r1_t, r2_t, ..., r5_t]
+    Vts = zip(r1,r2,r3,r4,r5)  # Each row = [r1_t, r2_t, ..., r5_t]
 
     # Run the smile fitting
     smiles, base_ivs = process_smile_q(Sts, Ks, TTEs, Vts)
@@ -241,13 +372,25 @@ def _(process_smile_q, r1, r2, r3, r4, r5, rock):
 
 @app.cell
 def _(smiles):
-    smiles
+    smiles[-10]
     return
 
 
 @app.cell
-def _(base_ivs):
-    base_ivs
+def _(np, smiles):
+    np.array(smiles)[-1]
+    return
+
+
+@app.cell
+def _(base_ivs, plt):
+    plt.plot(base_ivs)
+    return
+
+
+@app.cell
+def _(base_ivs, np):
+    np.array(base_ivs).mean()
     return
 
 
