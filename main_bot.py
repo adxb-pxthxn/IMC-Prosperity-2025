@@ -146,6 +146,7 @@ LIMITS = {
     "PICNIC_BASKET1": 60,
     "PICNIC_BASKET2": 100,
     "DJEMBES":60,
+    "MAGNIFICENT_MACARONS": 75
 
 }
 
@@ -689,7 +690,7 @@ class Basket2Strat(Strategy):
             best_ask = min(order.sell_orders.keys())
             return (best_bid + best_ask) / 2.0
     
-    def act(self,state,traderObject):
+    def act(self,state: TradingState,traderObject):
 
         order_depth = state.order_depths[self.symbol]
         position=state.position.get(self.symbol, 0)
@@ -735,11 +736,97 @@ class Basket2Strat(Strategy):
 
 
 
+class MacaronStrategy(Strategy):
+    def __init__(self, symbol, limit):
+        super().__init__(symbol, limit) 
+        self.windowSize = 50
+        self.window = []
+        self.sugarPriceHistory = []
+        self.sunLightHistory = []
+        self.importTariffHistory = []
+        self.exportTariffHistory = []
+        self.transportFeeHistory = []
+
+    def get_mid_price(self, order):
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+        return None
+
+    def act(self, state: TradingState, traderObject):
+        order_depth = state.order_depths[self.symbol]
+        curMidPrice = self.get_mid_price(order_depth)
+        if curMidPrice is None:
+            return
+
+        self.window.append(curMidPrice)
+        if len(self.window) > self.windowSize:
+            self.window.pop(0)
+
+        observation = state.observations.conversionObservations[self.symbol]
+
+        # Update indicators
+        sugar = observation.sugarPrice
+        sun = observation.sunlightIndex
+        imp = observation.importTariff
+        exp = observation.exportTariff
+        trans = observation.transportFees
+
+        self.sugarPriceHistory.append(sugar)
+        self.sunLightHistory.append(sun)
+
+        if len(self.sugarPriceHistory) > self.windowSize:
+            self.sugarPriceHistory.pop(0)
+            self.sunLightHistory.pop(0)
+
+        sugar_momentum = np.log(self.sugarPriceHistory[-1] / self.sugarPriceHistory[-2]) if len(self.sugarPriceHistory) > 1 else 0
+        sunlight_trend = sun - self.sunLightHistory[-2] if len(self.sunLightHistory) > 1 else 0
+
+        # Update tariff history
+        self.importTariffHistory.append(imp)
+        self.exportTariffHistory.append(exp)
+        self.transportFeeHistory.append(trans)
+
+        if len(self.importTariffHistory) > self.windowSize:
+            self.importTariffHistory.pop(0)
+            self.exportTariffHistory.pop(0)
+            self.transportFeeHistory.pop(0)
+
+        # Dynamic thresholds
+        avg_imp = np.mean(self.importTariffHistory)
+        avg_exp = np.mean(self.exportTariffHistory)
+        avg_trans = np.mean(self.transportFeeHistory)
+
+        high_import_tariff = imp > avg_imp + 0.5
+        low_import_tariff = imp < avg_imp - 0.5
+        high_export_tariff = exp > avg_exp + 0.3
+        rising_transport_fee = trans > avg_trans + 0.2
 
 
+        fair_value = np.mean(self.window) if self.window else curMidPrice
+
+        bid_price = int(curMidPrice - 1)
+        ask_price = int(curMidPrice + 1)
 
 
+        # Buy signal: sugar uptrend OR sunlight improving and import is not high
+        if (sugar_momentum > 0.005 or sunlight_trend > 0) and not high_import_tariff:
+            self.buy(bid_price, 3)
 
+        # Sell signal: sugar downtrend OR sunlight worsening and export is high
+        if (sugar_momentum < -0.005 or sunlight_trend < 0) and high_export_tariff:
+            self.sell(ask_price, 3)
+
+    def save(self) -> JSON:
+        return {
+            "last_price": getattr(self, "last_price", None),
+            "window": list(self.window)
+        }
+
+    def load(self, data: JSON) -> None:
+        self.last_price = data.get("last_price", None)
+        self.window = list(data.get("window", []))
 
 class EWM:
     def __init__(self, alpha=0.002):
@@ -775,12 +862,13 @@ class Trader:
     def __init__(self) -> None:
         self.strategies = {}
         self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {
-            "KELP": KelpStrategy,
-            "RAINFOREST_RESIN": ResinStrategy,
-            "SQUID_INK": SquidInkStrategy,
-            # "DJEMBES":JamStrategy,
-            "PICNIC_BASKET1":Basket1Strat,
-            "PICNIC_BASKET2":Basket2Strat
+            # "KELP": KelpStrategy,
+            # "RAINFOREST_RESIN": ResinStrategy,
+            # "SQUID_INK": SquidInkStrategy,
+            # # "DJEMBES":JamStrategy,
+            # "PICNIC_BASKET1":Basket1Strat,
+            # "PICNIC_BASKET2":Basket2Strat,
+            "MAGNIFICENT_MACARONS": MacaronStrategy
         }.items()}
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
@@ -800,12 +888,6 @@ class Trader:
             ):
                 (strategy_orders, strategy_conversions),t1,t2 = strategy.run(state,
                                                                      traderObject=old_trader_data.get(symbol, {}), )
-
-                orders[symbol] = strategy_orders
-                orders["PICNIC_BASKET1"]=t1
-                orders["PICNIC_BASKET2"]=t2
-                conversions += sum(strategy_conversions)
-
             new_trader_data[symbol] = strategy.save()
 
         for symbol, strategy in self.strategies.items():
