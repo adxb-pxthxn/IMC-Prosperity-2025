@@ -159,9 +159,9 @@ class Strategy:
     def act(self, state: TradingState, traderObject) -> None:
         raise NotImplementedError()
 
-    def run(self, state: TradingState, traderObject) -> tuple[list[Any], list[Any]]:
+    def run(self, state: TradingState, traderObject) -> tuple[list[Any], int]:
         self.orders = []
-        self.conversions = []
+        self.conversions = 0
 
         self.act(state, traderObject=traderObject)
         return self.orders, self.conversions
@@ -836,12 +836,17 @@ class MacaronStrategy(Strategy):
         bid_price = int(fair_value + 1)
         ask_price = int(fair_value - 1)
     
+        position = state.position.get(self.symbol, 0)
 
         if (sugar_momentum > 0.003 or sunlight_trend < 0):
             self.buy(bid_price, 3)
 
         if (sugar_momentum < -0.003 or sunlight_trend > 0):
             self.sell(ask_price, 3)
+
+        if ((position < 0 and norm_imp_tariff < 0.5) or (position > 0 and norm_exp_tariff < 0.5)) and norm_trans_fee < 0.5:
+            self.convert(3)
+
 
 
     def save(self) -> JSON:
@@ -952,7 +957,7 @@ class Trader:
                                                                      traderObject=old_trader_data.get(symbol, {}), )
 
                 orders[symbol] = strategy_orders
-                conversions += sum(strategy_conversions)
+                conversions += strategy_conversions
 
             new_trader_data[symbol] = strategy.save()
 
