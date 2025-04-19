@@ -738,85 +738,114 @@ class Basket2Strat(Strategy):
 
 class MacaronStrategy(Strategy):
     def __init__(self, symbol, limit):
-        super().__init__(symbol, limit) 
-        self.windowSize = 50
+        super().__init__(symbol, limit)
+        self.symbol = symbol
+        self.window_size = 25
         self.window = []
-        self.sugarPriceHistory = []
-        self.sunLightHistory = []
-        self.importTariffHistory = []
-        self.exportTariffHistory = []
-        self.transportFeeHistory = []
 
-    def get_mid_price(self, order):
-        if order.buy_orders and order.sell_orders:
-            best_bid = max(order.buy_orders.keys())
-            best_ask = min(order.sell_orders.keys())
+        # Indicator history
+        self.sugar_history = []
+        self.sunlight_history = []
+        self.import_tariff_history = []
+        self.export_tariff_history = []
+        self.transport_fee_history = []
+
+    def get_mid_price(self, order_depth):
+        if order_depth.buy_orders and order_depth.sell_orders:
+            best_bid = max(order_depth.buy_orders.keys())
+            best_ask = min(order_depth.sell_orders.keys())
             return (best_bid + best_ask) / 2.0
         return None
 
     def act(self, state: TradingState, traderObject):
         order_depth = state.order_depths[self.symbol]
-        curMidPrice = self.get_mid_price(order_depth)
-        if curMidPrice is None:
+        cur_mid_price = self.get_mid_price(order_depth)
+        if cur_mid_price is None:
             return
 
-        self.window.append(curMidPrice)
-        if len(self.window) > self.windowSize:
+        # Update price window
+        self.window.append(cur_mid_price)
+        if len(self.window) > self.window_size:
             self.window.pop(0)
 
-        observation = state.observations.conversionObservations[self.symbol]
+        obs = state.observations.conversionObservations[self.symbol]
 
-        # Update indicators
-        sugar = observation.sugarPrice
-        sun = observation.sunlightIndex
-        imp = observation.importTariff
-        exp = observation.exportTariff
-        trans = observation.transportFees
+        # Extract observations
+        sugar = obs.sugarPrice
+        sunlight = obs.sunlightIndex
+        imp_tariff = obs.importTariff
+        exp_tariff = obs.exportTariff
+        trans_fee = obs.transportFees
 
-        self.sugarPriceHistory.append(sugar)
-        self.sunLightHistory.append(sun)
+        # Update environmental history
+        self.sugar_history.append(sugar)
+        self.sunlight_history.append(sunlight)
+        self.import_tariff_history.append(imp_tariff)
+        self.export_tariff_history.append(exp_tariff)
+        self.transport_fee_history.append(trans_fee)
 
-        if len(self.sugarPriceHistory) > self.windowSize:
-            self.sugarPriceHistory.pop(0)
-            self.sunLightHistory.pop(0)
+        for history in [
+            self.sugar_history,
+            self.sunlight_history,
+            self.import_tariff_history,
+            self.export_tariff_history,
+            self.transport_fee_history,
+        ]:
+            if len(history) > self.window_size:
+                history.pop(0)
 
-        sugar_momentum = np.log(self.sugarPriceHistory[-1] / self.sugarPriceHistory[-2]) if len(self.sugarPriceHistory) > 1 else 0
-        sunlight_trend = sun - self.sunLightHistory[-2] if len(self.sunLightHistory) > 1 else 0
+        # Indicators
+        sugar_momentum = (
+            np.log(self.sugar_history[-1] / self.sugar_history[-2])
+            if len(self.sugar_history) > 1 else 0
+        )
+        sunlight_trend = (
+            self.sunlight_history[-1] - self.sunlight_history[-2]
+            if len(self.sunlight_history) > 1 else 0
+        )
 
-        # Update tariff history
-        self.importTariffHistory.append(imp)
-        self.exportTariffHistory.append(exp)
-        self.transportFeeHistory.append(trans)
+        # Averages and deviations
+        avg_imp = np.mean(self.import_tariff_history)
+        avg_exp = np.mean(self.export_tariff_history)
+        avg_trans = np.mean(self.transport_fee_history)
 
-        if len(self.importTariffHistory) > self.windowSize:
-            self.importTariffHistory.pop(0)
-            self.exportTariffHistory.pop(0)
-            self.transportFeeHistory.pop(0)
+        std_imp = np.std(self.import_tariff_history) or 0.1
+        std_exp = np.std(self.export_tariff_history) or 0.1
+        std_trans = np.std(self.transport_fee_history) or 0.1
 
-        # Dynamic thresholds
-        avg_imp = np.mean(self.importTariffHistory)
-        avg_exp = np.mean(self.exportTariffHistory)
-        avg_trans = np.mean(self.transportFeeHistory)
+        # Deviation signals
+        import_penalty = -(imp_tariff - avg_imp) / (std_imp + 1e-5) if imp_tariff > avg_imp + std_imp else 0
+        import_bonus = (avg_imp - imp_tariff) / (std_imp + 1e-5) if imp_tariff < avg_imp - std_imp else 0
 
-        high_import_tariff = imp > avg_imp + 0.5
-        low_import_tariff = imp < avg_imp - 0.5
-        high_export_tariff = exp > avg_exp + 0.3
-        rising_transport_fee = trans > avg_trans + 0.2
+        export_bonus = (avg_exp - exp_tariff) / (std_exp + 1e-5) if exp_tariff < avg_exp - std_exp else 0
+        export_penalty = -(exp_tariff - avg_exp) / (std_exp + 1e-5) if exp_tariff > avg_exp + std_exp else 0
 
+        transport_penalty = -(trans_fee - avg_trans) / (std_trans + 1e-5) if trans_fee > avg_trans + std_trans else 0
 
-        fair_value = np.mean(self.window) if self.window else curMidPrice
+        # Combined tariff modifier (bounded)
+        tariff_modifier = np.clip(import_penalty + import_bonus + export_bonus + export_penalty + transport_penalty, -1, 1)
 
-        bid_price = int(curMidPrice - 1)
-        ask_price = int(curMidPrice + 1)
+        # Sugar and sunlight impacts
+        sugar_impact = np.tanh(sugar_momentum * 50)
+        sunlight_impact = np.tanh(-sunlight_trend * 2)
 
+        # Final modifier
+        fundamental_modifier = 1 + 0.01 * (sugar_impact + sunlight_impact + tariff_modifier)
 
-        # Buy signal: sugar uptrend OR sunlight improving and import is not high
-        if (sugar_momentum > 0.005 or sunlight_trend > 0) and not high_import_tariff:
+        # Fair value calculation
+        technical_fair = np.mean(self.window) if self.window else cur_mid_price
+        fair_value = technical_fair * fundamental_modifier
+
+        # Round price levels
+        bid_price = int(fair_value - 1)
+        ask_price = int(fair_value + 1)
+
+        if (sugar_momentum > 0.005 or sunlight_trend < 0.01) and imp_tariff < avg_imp + std_imp:
             self.buy(bid_price, 3)
 
-        # Sell signal: sugar downtrend OR sunlight worsening and export is high
-        if (sugar_momentum < -0.005 or sunlight_trend < 0) and high_export_tariff:
+        if (sugar_momentum < -0.005 or sunlight_trend > 0.01) and exp_tariff > avg_exp - std_exp:
             self.sell(ask_price, 3)
+
 
     def save(self) -> JSON:
         return {
