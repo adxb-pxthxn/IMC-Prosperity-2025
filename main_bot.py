@@ -740,15 +740,19 @@ class MacaronStrategy(Strategy):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
         self.symbol = symbol
-        self.window_size = 25
+        self.window_size = 50
         self.window = []
 
         # Indicator history
         self.sugar_history = []
         self.sunlight_history = []
-        self.import_tariff_history = []
-        self.export_tariff_history = []
-        self.transport_fee_history = []
+        
+        self.min_import_tariff = -6
+        self.max_import_tariff = -3
+        self.min_export_tariff = 9
+        self.max_export_tariff = 10
+        self.min_transport_fee = 1
+        self.max_transport_fee = 2
 
     def get_mid_price(self, order_depth):
         if order_depth.buy_orders and order_depth.sell_orders:
@@ -773,23 +777,14 @@ class MacaronStrategy(Strategy):
         # Extract observations
         sugar = obs.sugarPrice
         sunlight = obs.sunlightIndex
-        imp_tariff = obs.importTariff
-        exp_tariff = obs.exportTariff
-        trans_fee = obs.transportFees
 
         # Update environmental history
         self.sugar_history.append(sugar)
         self.sunlight_history.append(sunlight)
-        self.import_tariff_history.append(imp_tariff)
-        self.export_tariff_history.append(exp_tariff)
-        self.transport_fee_history.append(trans_fee)
 
         for history in [
             self.sugar_history,
             self.sunlight_history,
-            self.import_tariff_history,
-            self.export_tariff_history,
-            self.transport_fee_history,
         ]:
             if len(history) > self.window_size:
                 history.pop(0)
@@ -804,58 +799,84 @@ class MacaronStrategy(Strategy):
             if len(self.sunlight_history) > 1 else 0
         )
 
-        # Averages and deviations
-        avg_imp = np.mean(self.import_tariff_history)
-        avg_exp = np.mean(self.export_tariff_history)
-        avg_trans = np.mean(self.transport_fee_history)
+        imp_tariff = obs.importTariff
+        exp_tariff = obs.exportTariff
+        trans_fee = obs.transportFees
 
-        std_imp = np.std(self.import_tariff_history) or 0.1
-        std_exp = np.std(self.export_tariff_history) or 0.1
-        std_trans = np.std(self.transport_fee_history) or 0.1
+        # Normalize tariff values to 0–1 scale
+        norm_imp_tariff = (imp_tariff - self.min_import_tariff) / (self.max_import_tariff - self.min_import_tariff)
+        norm_exp_tariff = (exp_tariff - self.min_export_tariff) / (self.max_export_tariff - self.min_export_tariff)
+        norm_trans_fee = (trans_fee - self.min_transport_fee) / (self.max_transport_fee - self.min_transport_fee)
 
-        # Deviation signals
-        import_penalty = -(imp_tariff - avg_imp) / (std_imp + 1e-5) if imp_tariff > avg_imp + std_imp else 0
-        import_bonus = (avg_imp - imp_tariff) / (std_imp + 1e-5) if imp_tariff < avg_imp - std_imp else 0
+        # Calculate tariff impact
+        # Import tariffs (more negative = cheaper to import, good for production)
+        import_impact = 1 - norm_imp_tariff  # high when tariff is low (i.e., good)
+        # Export tariffs (higher = worse for exports)
+        export_impact = 1 - norm_exp_tariff  # high when tariff is low
+        # Transport fees (lower = better)
+        transport_impact = 1 - norm_trans_fee
 
-        export_bonus = (avg_exp - exp_tariff) / (std_exp + 1e-5) if exp_tariff < avg_exp - std_exp else 0
-        export_penalty = -(exp_tariff - avg_exp) / (std_exp + 1e-5) if exp_tariff > avg_exp + std_exp else 0
-
-        transport_penalty = -(trans_fee - avg_trans) / (std_trans + 1e-5) if trans_fee > avg_trans + std_trans else 0
-
-        # Combined tariff modifier (bounded)
-        tariff_modifier = np.clip(import_penalty + import_bonus + export_bonus + export_penalty + transport_penalty, -1, 1)
-
+        # Combine tariff effects
+        tariff_impact = (import_impact + export_impact + transport_impact) / 3.0
+        tariff_modifier = 1 + 0.005 * (tariff_impact - 0.5) * 2  # center at 1.0, range ~0.99–1.01
+    
         # Sugar and sunlight impacts
         sugar_impact = np.tanh(sugar_momentum * 50)
         sunlight_impact = np.tanh(-sunlight_trend * 2)
 
         # Final modifier
-        fundamental_modifier = 1 + 0.01 * (sugar_impact + sunlight_impact + tariff_modifier)
+        fundamental_modifier = 1 + 0.005 * (sugar_impact + sunlight_impact)
+        fundamental_modifier *= tariff_modifier
 
         # Fair value calculation
         technical_fair = np.mean(self.window) if self.window else cur_mid_price
         fair_value = technical_fair * fundamental_modifier
 
         # Round price levels
-        bid_price = int(fair_value - 1)
-        ask_price = int(fair_value + 1)
+        bid_price = int(fair_value + 1)
+        ask_price = int(fair_value - 1)
+    
 
-        if (sugar_momentum > 0.005 or sunlight_trend < 0.01) and imp_tariff < avg_imp + std_imp:
+        if (sugar_momentum > 0.003 or sunlight_trend < 0):
             self.buy(bid_price, 3)
 
-        if (sugar_momentum < -0.005 or sunlight_trend > 0.01) and exp_tariff > avg_exp - std_exp:
+        if (sugar_momentum < -0.003 or sunlight_trend > 0):
             self.sell(ask_price, 3)
 
 
     def save(self) -> JSON:
         return {
             "last_price": getattr(self, "last_price", None),
-            "window": list(self.window)
+            "window": list(self.window),
+
+            "min_import_tariff": self.min_import_tariff,
+            "max_import_tariff": self.max_import_tariff,
+
+            "min_export_tariff": self.min_export_tariff,
+            "max_export_tariff": self.max_export_tariff,
+
+            "min_transport_fee": self.min_transport_fee,
+            "max_transport_fee": self.max_transport_fee,
+
+            "sugar_history": list(self.sugar_history),
+            "sunlight_history": list(self.sunlight_history),
         }
 
     def load(self, data: JSON) -> None:
         self.last_price = data.get("last_price", None)
         self.window = list(data.get("window", []))
+    
+        self.min_import_tariff = data.get("min_import_tariff", -6)
+        self.max_import_tariff = data.get("max_import_tariff", -3)
+
+        self.min_export_tariff = data.get("min_export_tariff", 9)
+        self.max_export_tariff = data.get("max_export_tariff", 10)
+
+        self.min_transport_fee = data.get("min_transport_fee", 1)
+        self.max_transport_fee = data.get("max_transport_fee", 2)
+
+        self.sugar_history = list(data.get("sugar_history", []))
+        self.sunlight_history = list(data.get("sunlight_history", []))
 
 class EWM:
     def __init__(self, alpha=0.002):
