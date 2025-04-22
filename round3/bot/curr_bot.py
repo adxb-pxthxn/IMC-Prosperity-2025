@@ -8,7 +8,7 @@ from typing import List, Any, TypeAlias, Tuple
 import jsonpickle
 import numpy.random as random
 
-from datamodel import TradingState, Symbol, Order, Listing, OrderDepth, Trade, Observation, ProsperityEncoder
+from datamodel import TradingState, Symbol, Order, Listing, OrderDepth, Trade, Observation, ProsperityEncoder,ConversionObservation
 
 JSON: TypeAlias = dict[str, "JSON"] | list["JSON"] | str | int | float | bool | None
 
@@ -610,6 +610,7 @@ class Basket1Strat(Strategy):
             if not np.isnan(val) and val>vol:
                 vol=val
                 best_ask=key
+        vol=-1
         for key,val in order.sell_orders.items():
             if not np.isnan(val) and val>vol:
                 vol=val
@@ -747,150 +748,3 @@ def rough_iv(S, K, T, C):
     approx_iv = C / (0.2 * S * np.sqrt(T))
     approx_iv = np.clip(approx_iv, 0.01, 2.0)
     return approx_iv
-
-class CouponStrategy(Strategy):
-    def __init__(self, symbol, limit):
-        super().__init__(symbol, limit)
-        self.voucher_strikes = [9500, 9750, 10000, 10250, 10500]
-        self.smile_window = deque(maxlen=100)
-        self.window=[]
-
-
-    def BS_CALL(self, S, K, T, r, sigma):
-        N = NormalDist().cdf
-        d1 = (math.log(S/K) + (r + sigma**2/2)*T) / (sigma*math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        return S * N(d1) - K * math.exp(-r*T)* N(d2)
-
-
-    def get_mid_price(self, order, traderObject=None):
-
-
-        if not (order.buy_orders and order.sell_orders):
-            return
-
-
-        best_ask=-1
-        best_bid=-1
-        vol=-1
-
-        for key,val in order.buy_orders.items():
-            if not np.isnan(val) and val>vol:
-                vol=val
-                best_ask=key
-        for key,val in order.sell_orders.items():
-            if not np.isnan(val) and val>vol:
-                vol=val
-                best_bid=key
-
-        return (best_bid+best_ask)/2
-
-
-    def act(self, state, traderObject) -> None:
-        base_asset = "VOLCANIC_ROCK"
-        if base_asset not in state.order_depths:
-            return
-        for sym in [base_asset, self.symbol]:
-            if sym not in state.order_depths or not (
-                state.order_depths[sym].buy_orders and state.order_depths[sym].sell_orders
-            ):
-                return
-
-        # Retrieve mid prices for both assets
-        rock = self.get_mid_price(state.order_depths[base_asset])
-        coupon = self.get_mid_price(state.order_depths[self.symbol])
-        if rock is None or coupon is None:
-            return
-
-
-
-        # Extract strike price from symbol, e.g., "COUPON_10000" yields strike K=10000
-        K = int(self.symbol.split('_')[-1])
-
-        # Timing calculations using timestamp
-        mill = 1_000_000
-        timestamp = state.timestamp
-        T = ((8 - (timestamp // (3*mill))) / 365) - (timestamp / mill) / 365
-        r = 0  # risk-free rate
-
-        # --- Incorporate new variables ---
-        # Assume m_t, v_t, base_iv are available from the state or other data sources:
-        # You may have to update these assignments based on your data feed.
-        m_t = traderObject.get("market_trend", 0.466)        # Defaulting to 0 (neutral) if not provided.
-        v_t = traderObject.get("volatility_adjustment", 0.629) # Defaulting to 0 if not provided.
-        base_iv = traderObject.get("base_iv", 0.587)         # Default to the original constant if not provided.
-
-        # Update sigma dynamically based on the base implied volatility and current market volatility signal
-        sigma = base_iv * (1 + v_t)
-
-        # Calculate fair value using dynamically adjusted sigma
-        fair = self.BS_CALL(rock, K, T, r, sigma)
-
-        # Adjust fair value with the market trend factor m_t
-        fair_adjusted = fair
-
-        # Adjust thresholds based on volatility signal
-        threshold = 2 * (1 + v_t)
-
-        # Retrieve current best orders from the order depth for decision-making
-        order_depth = state.order_depths[self.symbol]
-        buy_price = max(order_depth.buy_orders.keys())
-        sell_price = min(order_depth.sell_orders.keys())
-        buy_vol = order_depth.buy_orders[buy_price]
-        sell_vol = order_depth.sell_orders[sell_price]
-
-        # Trading logic: Sell if overvalued, buy if undervalued relative to our adjusted fair value
-        if coupon > fair_adjusted:
-            self.sell(buy_price, buy_vol)
-        elif coupon < fair_adjusted:
-            self.buy(sell_price, sell_vol)
-
-
-
-
-
-
-class Trader:
-    def __init__(self) -> None:
-        self.strategies = {}
-        self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {
-            "KELP": KelpStrategy,
-            "RAINFOREST_RESIN": ResinStrategy,
-            "SQUID_INK": SquidInkStrategy,
-            # "JAMS": JamStrategy,
-            "PICNIC_BASKET1": Basket1Strat,
-            "PICNIC_BASKET2": Basket2Strat,
-            "VOLCANIC_ROCK_VOUCHER_9500":CouponStrategy,
-            "VOLCANIC_ROCK_VOUCHER_9750":CouponStrategy,
-            "VOLCANIC_ROCK_VOUCHER_10500":CouponStrategy,
-            "VOLCANIC_ROCK_VOUCHER_10250":CouponStrategy,
-            "VOLCANIC_ROCK_VOUCHER_10000":CouponStrategy,
-        }.items()}
-
-    def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
-        orders = {}
-        conversions = 0
-
-        old_trader_data = json.loads(state.traderData) if state.traderData != "" else {}
-        new_trader_data = {}
-
-        for symbol, strategy in self.strategies.items():
-            if symbol in old_trader_data:
-                strategy.load(old_trader_data[symbol])
-
-            if (symbol in state.order_depths and
-                    len(state.order_depths[symbol].buy_orders) > 0 and
-                    len(state.order_depths[symbol].sell_orders) > 0
-            ):
-                strategy_orders, strategy_conversions = strategy.run(state,
-                                                                     traderObject=old_trader_data.get(symbol, {}), )
-
-                orders[symbol] = strategy_orders
-                conversions += sum(strategy_conversions)
-
-            new_trader_data[symbol] = strategy.save()
-
-        trader_data = json.dumps(new_trader_data, separators=(",", ":"))
-
-        logger.flush(state, orders, conversions, trader_data)
-        return orders, conversions, trader_data
