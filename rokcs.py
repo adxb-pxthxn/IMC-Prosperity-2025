@@ -5,6 +5,7 @@ import math
 from statistics import NormalDist
 import numpy as np
 from typing import List, Any, TypeAlias, Tuple
+from enum import IntEnum
 
 from datamodel import TradingState, Symbol, Order, Listing, OrderDepth, Trade, Observation, ProsperityEncoder, \
     ConversionObservation
@@ -156,7 +157,7 @@ logger = Logger()
 
 
 LIMITS = {
-    "CROISSANT": 250,
+    "CROISSANTS": 250,
     "JAMS": 350,
     "DJEMBE": 60,
     "KELP": 50,
@@ -635,7 +636,7 @@ class Basket1Strat(Strategy):
         if not order_depth.buy_orders or not order_depth.sell_orders:
             return
 
-        threshold = [80, -75]
+        threshold = [65, -60]
 
         if signal > threshold[0]:
             self.go_long(state)
@@ -678,7 +679,7 @@ class Basket2Strat(Strategy):
             return
 
 
-        threshold = [40, -40]
+        threshold = [25, -25]
 
         if signal > threshold[0]:
             self.go_long(state)
@@ -872,9 +873,11 @@ class CouponStrategy(Strategy):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
         self.voucher_strikes = [9500, 9750, 10000, 10250, 10500]
-        self.smile_window = deque(maxlen=100)
-        self.window=[]
-
+        # self.smile_window = deque(maxlen=100)
+        # self.window=[]
+    
+    def save(self):
+        return {}
 
     def run(self, state: TradingState, traderObject) -> tuple[list[Any], list[Any]]:
         self.orders = []
@@ -951,8 +954,11 @@ class CouponStrategy(Strategy):
 
         # timestamp=state.timestamp
         # mill=1_000_000
+        # timestamp=state.timestamp
+        # mill=1_000_000
+        # day=8-4
         K = int(self.symbol.split('_')[-1])
-        T = 4/365
+        T =5/365#PLEASE THIS MUST BE 3 for FINALL !!!!!
 
         r = 0
 
@@ -964,53 +970,124 @@ class CouponStrategy(Strategy):
 
 
 
-
         order_depth = state.order_depths[self.symbol]
         buy_price = max(order_depth.buy_orders)
         sell_price = min(order_depth.sell_orders)
         buy_vol = order_depth.buy_orders[buy_price]
         sell_vol = order_depth.sell_orders[sell_price]
 
+        rock_depth = state.order_depths[base_asset]
+        rock_buy = max(rock_depth.buy_orders)    # price you can sell into
+        rock_sell = min(rock_depth.sell_orders)
 
-        hedge_order = []
         residual = fair-coupon
 
 
-        # thresh={
-        #     9500:1.5,
-        #     9750:2,
-        #     10000:2,
-        #     10250:2,
-        #     10500:1.5
+        thresh={
+            9500:[-1,1],
+            9750:[-1.5,1.5],
+            10000:[-2,1],
+            10250:[-1,1],
+            10500:[-1.5,1]
 
-        # }
-        threshold = 2
+        }
+        threshold = thresh[K]
 
         
 
 
-        hedge_thresh=0.75
+        hedge_thresh=0.7
 
-        # logger.print(f"Residual:{residual}")
+        rock_pos=state.position.get(base_asset,0)
+        coupon_pos=state.position.get(self.symbol,0)
 
-        if residual < -threshold :
-            short=self.go_short(state)
-            
-            hedge = int(min(delta * abs(buy_vol),delta* abs(short)))
+        hedge_order = []
 
+        if coupon_pos != 0 and threshold[0] <= residual <= threshold[1]:
+            # to flatten: send the exact opposite volume of your current pos
+            exit_volume = -(rock_pos*2)
+            exit_price  = rock_buy if rock_pos<0 else rock_sell
+
+            hedge_order.append( Order(base_asset, exit_price, exit_volume) )
+            self.revert(sell_price,buy_price,coupon_pos)
+            return hedge_order
+
+
+
+        if residual < threshold[0]:
+            short = self.go_short(state)
+            hedge = int(min(delta * abs(short), 400 - rock_pos))
             if hedge > 0:
-                hedge_order.append(Order(base_asset, round(rock),round( hedge*hedge_thresh)))
+                hedge_order.append(Order(base_asset, round(rock), round(hedge * hedge_thresh)))
 
-    
-        elif residual >threshold:
-            long=self.go_long(state)
-
-            hedge = int(min(delta * abs(sell_vol), delta*abs(long)))
-
+        elif residual > threshold[1]:
+            long = self.go_long(state)
+            hedge = int(min(delta * abs(long), 400 - rock_pos))
             if hedge > 0:
-                hedge_order.append(Order(base_asset, round(rock), -round(hedge*hedge_thresh)))
+                hedge_order.append(Order(base_asset, round(rock), -round(hedge * hedge_thresh)))
 
         return hedge_order
+
+    def revert(self,buy,sell,pos):
+        if pos>0:
+            self.sell(buy,pos*2)
+        if pos<0:
+            self.buy(sell,-(pos*2))
+class Signal(IntEnum):
+    NEUTRAL = 0
+    SHORT = 1
+    LONG = 2
+
+class SignalStrategy(Strategy):
+    def __init__(self, symbol: Symbol, limit: int) -> None:
+        super().__init__(symbol, limit)
+
+        self.signal = Signal.NEUTRAL
+
+    @abstractmethod
+    def get_signal(self, state: TradingState) -> Signal | None:
+        raise NotImplementedError()
+
+    def act(self, state: TradingState,traderObject) -> None:
+        new_signal = self.get_signal(state)
+        if new_signal is not None:
+            self.signal = new_signal
+
+        position = state.position.get(self.symbol, 0)
+        order_depth = state.order_depths[self.symbol]
+
+        if self.signal == Signal.NEUTRAL:
+            if position < 0:
+                self.buy(self.get_buy_price(order_depth), -position)
+            elif position > 0:
+                self.sell(self.get_sell_price(order_depth), position)
+        elif self.signal == Signal.SHORT:
+            self.sell(self.get_sell_price(order_depth), self.limit + position)
+        elif self.signal == Signal.LONG:
+            self.buy(self.get_buy_price(order_depth), self.limit - position)
+
+    def get_buy_price(self, order_depth: OrderDepth) -> int:
+        return min(order_depth.sell_orders.keys())
+
+    def get_sell_price(self, order_depth: OrderDepth) -> int:
+        return max(order_depth.buy_orders.keys())
+
+    def save(self) -> JSON:
+        return self.signal.value
+
+    def load(self, data: JSON) -> None:
+        self.signal = Signal(data)
+
+class Crossaints(SignalStrategy):
+
+    def get_signal(self, state):
+        trades=state.market_trades.get(self.symbol, [])
+
+        for t in trades:
+            if t.buyer=='Olivia':
+                return Signal.LONG
+            elif t.seller=='Olivia':
+                return Signal.SHORT
 
 
 
@@ -1023,7 +1100,7 @@ class Trader:
             "SQUID_INK": SquidInkStrategy,
             "PICNIC_BASKET1": Basket1Strat,
             "PICNIC_BASKET2": Basket2Strat,
-      
+            "CROISSANTS":Crossaints
             # "MAGNIFICENT_MACARONS": MacaronSignalsStrategy
         }.items()}
         self.couponStrategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {

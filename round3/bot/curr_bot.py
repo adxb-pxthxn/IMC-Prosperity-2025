@@ -592,7 +592,7 @@ class Basket1Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[-20,-50]
-        self.ewm=EWM(1/2400)
+        self.ewm=EWM(1/4000)
     
 
     def get_mid_price(self, order, traderObject=None):
@@ -663,7 +663,7 @@ class Basket2Strat(Strategy):
         super().__init__(symbol, limit)   
         self.window = deque()
         self.params=[  0.99   , 0.98 ,0.98 , 0.98]
-        self.ewm=EWM(1/2400)
+        self.ewm=EWM(1/4000)
     
     def get_mid_price(self, order, traderObject=None):
         
@@ -748,3 +748,194 @@ def rough_iv(S, K, T, C):
     approx_iv = C / (0.2 * S * np.sqrt(T))
     approx_iv = np.clip(approx_iv, 0.01, 2.0)
     return approx_iv
+
+class CouponStrategy(Strategy):
+    def __init__(self, symbol, limit):
+        super().__init__(symbol, limit)
+        self.voucher_strikes = [9500, 9750, 10000, 10250, 10500]
+        self.smile_window = deque(maxlen=100)
+        self.window=[]
+
+
+    def run(self, state: TradingState, traderObject) -> tuple[list[Any], list[Any]]:
+        self.orders = []
+        self.conversions = []
+
+        under_order=self.act(state, traderObject=traderObject)
+        return self.orders, self.conversions,under_order
+        
+    def BS_CALL(self, S, K, T, r):
+        coeffs = [0.23797695, 0.00152097, 0.15513003]
+
+        # Compute log-moneyness
+        m = math.log(K / S) / math.sqrt(T)
+        
+        sigma=np.polyval(coeffs,m)
+
+        # # Get fitted implied vol from parabola
+        # sigma = 0.22959255410663698
+
+        # Black-Scholes call price
+        def bs_call_price(S, K, T, r, sigma):
+            N = NormalDist().cdf
+            d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+            d2 = d1 - sigma * math.sqrt(T)
+            return S * N(d1) - K * math.exp(-r * T) * N(d2)
+
+        # Finite difference prices for Vega estimation
+        price = bs_call_price(S, K, T, r, sigma)
+        price_up = bs_call_price(S, K, T, r, sigma + 0.03)
+        price_down = bs_call_price(S, K, T, r, sigma - 0.03)
+        vega = (price_up - price_down) / (2 * 0.06)
+
+        return price, price_up, price_down, sigma, vega
+
+
+
+    def get_mid_price(self, order, traderObject=None):
+        
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+
+
+    def act(self, state, traderObject) -> None:
+        base_asset = "VOLCANIC_ROCK"
+        if base_asset not in state.order_depths:
+            return
+
+        for sym in [base_asset, self.symbol]:
+            if sym not in state.order_depths or not (
+                state.order_depths[sym].buy_orders and state.order_depths[sym].sell_orders
+            ):
+                return
+
+        rock = self.get_mid_price(state.order_depths[base_asset])
+        coupon = self.get_mid_price(state.order_depths[self.symbol])
+        if rock is None or coupon is None:
+            return
+
+        # timestamp=state.timestamp
+        # mill=1_000_000
+        K = int(self.symbol.split('_')[-1])
+        T = 3/365
+
+        r = 0
+
+        # Smile-based BS pricing
+        fair, up, down, sigma, vega = self.BS_CALL(rock, K, T, r)
+
+        # Delta calc
+        d1 = (np.log(rock / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        delta = NormalDist().cdf(d1) 
+
+        order_depth = state.order_depths[self.symbol]
+        buy_price = max(order_depth.buy_orders)
+        sell_price = min(order_depth.sell_orders)
+        buy_vol = order_depth.buy_orders[buy_price]
+        sell_vol = order_depth.sell_orders[sell_price]
+
+        rock_depth = state.order_depths[base_asset]
+        rock_buy_price = max(rock_depth.buy_orders)
+        rock_sell_price = min(rock_depth.sell_orders)
+        rock_buy_vol = rock_depth.buy_orders[rock_buy_price]
+        rock_sell_vol = rock_depth.sell_orders[rock_sell_price]
+
+        hedge_order = []
+        residual = coupon - fair
+        z_score = residual / vega if vega != 0 else 0
+        # logger.print(f"Residual: {residual:.4f} | Vega: {vega:.4f} | delta: {delta:.2f} | coupon: {coupon} d+c: {fair+delta} fair:{fair}")
+
+        threshold = 4
+
+        rock_pos=400-abs(state.position.get(base_asset,0))
+
+        # Sell coupon if overpriced, hedge by buying rock
+        if residual > threshold and coupon>up:
+            self.sell(buy_price, buy_vol)
+            hedge = int(min(delta * abs(buy_vol), rock_pos))
+
+            if hedge > 0:
+                hedge_order.append(Order(base_asset, round(rock_sell_price),round( hedge*0.0175)))
+
+        # Buy coupon if underpriced, hedge by selling rock
+        elif residual <- threshold and coupon<down:
+            self.buy(sell_price, rock_pos)
+            hedge = int(min(delta * abs(sell_vol), rock_buy_vol))
+
+            if hedge > 0:
+                hedge_order.append(Order(base_asset, round(rock_buy_price), round(-hedge*0.0175)))
+
+        return hedge_order
+
+
+
+
+class Trader:
+    def __init__(self) -> None:
+        self.strategies = {}
+        self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {
+            "KELP": KelpStrategy,
+            "RAINFOREST_RESIN": ResinStrategy,
+            "SQUID_INK": SquidInkStrategy,
+            "PICNIC_BASKET1": Basket1Strat,
+            "PICNIC_BASKET2": Basket2Strat,
+        }.items()}
+        self.couponStrategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {
+            "VOLCANIC_ROCK_VOUCHER_9500":CouponStrategy,
+            "VOLCANIC_ROCK_VOUCHER_9750":CouponStrategy,
+            "VOLCANIC_ROCK_VOUCHER_10500":CouponStrategy,
+            "VOLCANIC_ROCK_VOUCHER_10250":CouponStrategy,
+            "VOLCANIC_ROCK_VOUCHER_10000":CouponStrategy,
+        }.items()}
+
+    def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
+        orders = {}
+        conversions = 0
+
+        old_trader_data = json.loads(state.traderData) if state.traderData != "" else {}
+        new_trader_data = {}
+
+        #trade all except coupons
+        for symbol, strategy in self.strategies.items():
+            if symbol in old_trader_data:
+                strategy.load(old_trader_data[symbol])
+
+            if (symbol in state.order_depths and
+                    len(state.order_depths[symbol].buy_orders) > 0 and
+                    len(state.order_depths[symbol].sell_orders) > 0
+            ):
+                strategy_orders, strategy_conversions = strategy.run(state,
+                                                                     traderObject=old_trader_data.get(symbol, {}), )
+
+                orders[symbol] = strategy_orders
+                conversions += sum(strategy_conversions)
+
+            new_trader_data[symbol] = strategy.save()
+
+        #trade coupons
+        rock_orders=[]
+        for symbol, strategy in self.couponStrategies.items():
+            if symbol in old_trader_data:
+                strategy.load(old_trader_data[symbol])
+
+            if (symbol in state.order_depths and
+                    len(state.order_depths[symbol].buy_orders) > 0 and
+                    len(state.order_depths[symbol].sell_orders) > 0
+            ):
+                strategy_orders, strategy_conversions,under_trade = strategy.run(state,
+                                                                     traderObject=old_trader_data.get(symbol, {}), )
+
+                orders[symbol] = strategy_orders
+                rock_orders.extend(under_trade)
+                
+                conversions += sum(strategy_conversions)
+
+            new_trader_data[symbol] = strategy.save()
+
+        trader_data = json.dumps(new_trader_data, separators=(",", ":"))
+        orders['VOLCANIC_ROCK']=rock_orders
+
+        logger.flush(state, orders, conversions, trader_data)
+        return orders, conversions, trader_data
