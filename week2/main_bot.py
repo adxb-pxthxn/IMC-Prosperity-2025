@@ -4,7 +4,7 @@ from collections import deque
 import numpy as np
 from typing import List, Any, TypeAlias, Tuple
 import jsonpickle
-import numpy.random as random
+
 
 from datamodel import TradingState, Symbol, Order, Listing, OrderDepth, Trade, Observation, ProsperityEncoder
 
@@ -131,29 +131,18 @@ class Logger:
 
 logger = Logger()
 
+
 # =======================
 # NOTE: BOILERPLATE END
 # endregion
 # =======================
 
-LIMITS = {
-    "CROISSANT": 250,
-    "JAMS": 350,
-    "DJEMBE": 60,
-    "KELP": 50,
-    "RAINFOREST_RESIN": 50,
-    "SQUID_INK": 50,
-    "PICNIC_BASKET1": 60,
-    "PICNIC_BASKET2": 100,
-    "DJEMBES": 60,
-
-}
-
+position_limit=50
 
 class Strategy:
     def __init__(self, symbol: str, limit: int) -> None:
         self.symbol = symbol
-        self.limit = LIMITS[self.symbol]
+        self.limit = limit
 
     @abstractmethod
     def act(self, state: TradingState, traderObject) -> None:
@@ -197,9 +186,12 @@ class MarketMaking(Strategy):
     def get_fair_price(self, order: OrderDepth, traderObject) -> int:
         raise NotImplementedError
 
+
+    
     def act(self, state: TradingState, traderObject) -> None:
         order_depth = state.order_depths[self.symbol]
 
+        
         fair_price = self.get_fair_price(order_depth, traderObject)
 
         # get and sort each side of the order book #
@@ -232,9 +224,6 @@ class MarketMaking(Strategy):
                 len(self.window) == self.window_size and
                 all(self.window)
         )
-
-        if (fair_price is None):
-            return
 
         # calculate max buy and min sell prices, if inventory less than limit/2
         max_buy_price = fair_price - 1 if position > self.limit * 0.5 else fair_price
@@ -288,18 +277,18 @@ class MarketMaking(Strategy):
             price = max(min_sell_price, popular_sell_price - 1)
             self.sell(price, to_sell)
 
-
 class MeanReversion(MarketMaking):
     def __init__(self, symbol, limit):
         super().__init__(symbol, limit)
+        
+    
+    def act(self,state,traderObject):
 
-    def act(self, state, traderObject):
-
-        buy_volume = 0
-        sell_volume = 0
+        buy_volume=0
+        sell_volume=0
         order_depth = state.order_depths[self.symbol]
-
-        fair = self.get_fair_price(order_depth, traderObject)
+        
+        fair= self.get_fair_price(order_depth, traderObject)
 
         # get and sort each side of the order book #
         order_depth = state.order_depths[self.symbol]
@@ -308,44 +297,44 @@ class MeanReversion(MarketMaking):
 
         # get current position and set current position limits #
         position = state.position.get(self.symbol, 0)
-        position_limit = self.limit
 
-        sell_orders = order_depth.sell_orders
-        buy_orders = order_depth.buy_orders
+        sell_orders=order_depth.sell_orders
+        buy_orders=order_depth.buy_orders
         try:
-            best_ask_fair = min([p for p in sell_orders.keys() if p > fair], default=fair + 1)
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+1], default=fair+1)
         except ValueError:
-            best_ask_fair = fair
-
+            best_ask_fair = fair+1
+            
         try:
-            best_bid_fair = max([p for p in buy_orders.keys() if p < fair], default=fair - 1)
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair+1], default=fair-1)
         except ValueError:
-            best_bid_fair = fair
+            best_bid_fair = fair-1
 
         if sell_orders:
-            best_ask = min(sell_orders.keys())
-            best_ask_amount = -sell_orders[best_ask]
-            if best_ask < fair:
-                quant = min(best_ask_amount, position_limit - position)
-                if quant > 0:
-                    self.buy(best_ask, quant)
-                    buy_volume += quant
+            best_ask=min(sell_orders.keys())
+            best_ask_amount=-sell_orders[best_ask]
+            if best_ask<fair:
+                quant=min(best_ask_amount,position_limit-position)
+                if quant>0:
+                    self.buy(best_ask,quant)
+                    buy_volume+=quant
         if buy_orders:
             best_bid = max(buy_orders.keys())
             best_bid_amount = buy_orders[best_bid]
             if best_bid > fair:
                 quant = min(best_bid_amount, position_limit + position)
                 if quant > 0:
-                    self.sell(best_bid, quant)
+                    self.sell(best_bid,quant)
                     sell_volume += quant
+        
+        buy_quant=position_limit-(position+buy_volume)
+        if buy_quant>0:
+            self.buy(best_bid_fair+1,buy_quant)
 
-        buy_quant = position_limit - (position + buy_volume)
-        if buy_quant > 0:
-            self.buy(best_bid_fair + 1, buy_quant)
 
-        sell_quant = position_limit + (position - sell_volume)
-        if sell_quant > 0:
-            self.sell(best_ask_fair - 1, sell_quant)
+        sell_quant=position_limit+(position-sell_volume)
+        if sell_quant>0:
+            self.sell(best_ask_fair - 1,sell_quant)
 
 
 class KelpStrategy(MarketMaking):
@@ -402,6 +391,7 @@ class KelpStrategy(MarketMaking):
 
         return None
 
+
     def save(self) -> JSON:
         return {
             "last_price": getattr(self, "last_price", None),
@@ -416,21 +406,21 @@ class KelpStrategy(MarketMaking):
 class ResinStrategy(MeanReversion):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.ewm = EWM(0.15)
-        self.last_price = 10000
+        self.ewm=EWM(0.15)
+        self.last_price = 10_000
 
     def get_mid_price(self, order, traderObject):
-
+        
         if order.buy_orders and order.sell_orders:
             best_bid = max(order.buy_orders.keys())
             best_ask = min(order.sell_orders.keys())
             self.last_price = (best_bid + best_ask) / 2.0
             return self.last_price
         else:
-            return None
-
+            return None 
+    
     def get_fair_price(self, order, traderObject):
-        return self.ewm.update(self.get_mid_price(order, traderObject))
+        return self.ewm.update(self.get_mid_price(order,traderObject))
 
     def save(self) -> JSON:
         return {
@@ -441,360 +431,169 @@ class ResinStrategy(MeanReversion):
         self.last_price = data.get("last_price", None)
 
 
-class SquidInkStrategy(MarketMaking):
-    def __init__(self, symbol: Symbol, limit: int) -> None:
-        super().__init__(symbol, limit)
-        self.last_price = None
-        self.price_history = []
-        self.tickCount = 0
-        self.last_trade_time = -1000
-        self.window_size = 75
-
-    def compute_volatility(self, prices: list[float]) -> float:
-        if len(prices) < 2:
-            return 0.0
-        returns = np.diff(prices) / prices[:-1]
-        return np.std(returns)
-
-    def should_quote(
-            self,
-            order_depth: OrderDepth,
-            vol: float,
-            mm_ask: float,
-            mm_bid: float
-    ) -> bool:
-        if mm_ask is None or mm_bid is None:
-            return False
-        if len(order_depth.sell_orders) < 2 or len(order_depth.buy_orders) < 2:
-            return False
-        if vol > 0.02:
-            return False
-
-        self.tickCount += 1
-
-        cooldown_ms = 10
-        if self.tickCount < self.last_trade_time + cooldown_ms:
-            return False
-        self.last_trade_time = self.tickCount
-        return True
-
-    def get_fair_price(self, order_depth: OrderDepth, traderObject) -> float:
-        traderObject = traderObject
-        min_volume = 15
-
-        if len(order_depth.sell_orders) == 0 or len(order_depth.buy_orders) == 0:
-            return None
-
-        best_ask = min(order_depth.sell_orders.keys())
-        best_bid = max(order_depth.buy_orders.keys())
-
-        filtered_ask = [
-            price for price, volume in order_depth.sell_orders.items()
-            if abs(volume) >= min_volume
-        ]
-        filtered_bid = [
-            price for price, volume in order_depth.buy_orders.items()
-            if abs(volume) >= min_volume
-        ]
-
-        mm_ask = min(filtered_ask) if filtered_ask else None
-        mm_bid = max(filtered_bid) if filtered_bid else None
-
-        if mm_ask is None or mm_bid is None:
-            mid_price = traderObject.get("SQUID_last_price", (best_ask + best_bid) / 2)
-        else:
-            mid_price = (mm_ask + mm_bid) / 2
-
-        self.price_history.append(mid_price)
-        if len(self.price_history) > self.window_size:
-            self.price_history.pop(0)
-
-        vol = self.compute_volatility(self.price_history)
-        vol = max(vol, 0.0001)
-
-        alpha = max(0.05, 0.3 - vol * 10)
-        beta = max(0.05, 0.25 - vol * 10)
-        spread_padding = vol * 1000
-
-        historical_mean = sum(self.price_history) / len(self.price_history)
-        deviation = mid_price - historical_mean
-
-        if self.last_price:
-            ret = (mid_price - self.last_price) / self.last_price
-        else:
-            ret = 0.0
-
-        if (deviation > 0 and ret < 0) or (deviation < 0 and ret > 0):
-            reversion_adjustment = -alpha * deviation
-        else:
-            reversion_adjustment = 0.0
-
-        momentum_adjustment = -ret * beta * mid_price
-
-        if not self.should_quote(order_depth, vol, mm_ask, mm_bid):
-            return None
-
-        fair_price = mid_price + reversion_adjustment + momentum_adjustment - spread_padding
-
-        self.last_price = mid_price
-        return fair_price
-
-
-class JamStrategy(Strategy):
-    def __init__(self, symbol: str, limit: int):
-        super().__init__(symbol, limit)
-        self.prices = deque(maxlen=20)
-        self.alpha = 0.1
-        self.b1 = []
-        self.b2 = []
-
-    def run(self, state, traderObject):
-        return super().run(state, traderObject), self.b1, self.b2
-
-    def update_signal(self, price: float) -> float:
-        self.prices.append(price)
-        if len(self.prices) < 2:
-            return 0
-        return price - np.mean(self.prices)
-
-    def get_mid_price(self, order: OrderDepth):
-        if order.buy_orders and order.sell_orders:
-            return (max(order.buy_orders) + min(order.sell_orders)) / 2
-        return None
-
-    def act(self, state: TradingState, traderObject) -> None:
-        order = state.order_depths[self.symbol]
-        mid_price = self.get_mid_price(order)
-
-        if mid_price is None:
-            return
-
-        signal = self.update_signal(mid_price)
-        position = state.position.get(self.symbol, 0)
-
-        basket1 = self.get_mid_price(state.order_depths['PICNIC_BASKET1'])
-        positionb1 = state.position.get('PICNIC_BASKET1', 0)
-        positionb2 = state.position.get('PICNIC_BASKET2', 0)
-        basket2 = self.get_mid_price(state.order_depths['PICNIC_BASKET2'])
-        logger.print(state.position)
-        if signal > self.alpha:
-            if position < self.limit:
-                self.buy(int(mid_price), self.limit - position)
-            if positionb1 < 60 and random.rand() > 0.02:
-                self.buy_other(int(basket1), 60 - positionb1, 'PICNIC_BASKET1')
-            if positionb2 < 100 and random.rand() > 0.02:
-                self.buy_other(int(basket2), 100 - positionb2, 'PICNIC_BASKET2')
-
-        elif signal < -self.alpha:
-            if position > -self.limit:
-                self.sell(int(mid_price), self.limit + position)
-            if positionb1 > -60:
-                self.sell_other(int(basket1), 60 + positionb1, 'PICNIC_BASKET1')
-            if positionb2 > -100:
-                self.sell_other(int(basket2), 100 + positionb2, 'PICNIC_BASKET2')
-
-    def buy_other(self, price: int, quantity: int, symbol) -> None:
-        if symbol == "PICNIC_BASKET1":
-            self.b1.append(Order(symbol, round(price), quantity))
-        self.b2.append(Order(symbol, round(price), quantity))
-
-    def sell_other(self, price: int, quantity: int, symbol) -> None:
-        if symbol == "PICNIC_BASKET1":
-            self.b1.append(Order(symbol, round(price), -quantity))
-        self.b2.append(Order(symbol, round(price), -quantity))
-
-    def save(self) -> JSON:
-        return list(self.prices)
-
-    def load(self, data: JSON) -> None:
-        self.prices = deque(data if data else [], maxlen=20)
-
-
-class Basket1Strat(Strategy):
-
-    def __init__(self, symbol, limit):
-        super().__init__(symbol, limit)
-        self.window = deque()
-        self.params = [0.99, 0.98, 0.98, 0.98]
-        self.ewm = EWM(1 / 2300)
-
-    def get_mid_price(self, order, traderObject=None):
-
-        if order.buy_orders and order.sell_orders:
-            best_bid = max(order.buy_orders.keys())
-            best_ask = min(order.sell_orders.keys())
-            return (best_bid + best_ask) / 2.0
-
-    def act(self, state, traderObject):
-
-        order_depth = state.order_depths[self.symbol]
-        position = state.position.get(self.symbol, 0)
-
-        basket = self.get_mid_price(order_depth)
-
-        cros, jams = self.get_mid_price(state.order_depths['CROISSANTS']), self.get_mid_price(
-            state.order_depths['JAMS'])
-
-        diff = basket - (4 * cros + 2 * jams)
-
-        signal = self.ewm.update(diff) - diff
-
-        # Order book for trading GIFT_BASKET
-        order_depth = state.order_depths[self.symbol]
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return
-
-        buy_price = max(order_depth.sell_orders.keys())
-        sell_price = min(order_depth.buy_orders.keys())
-
-        buy_vol = order_depth.sell_orders[buy_price]
-        sell_vol = order_depth.buy_orders[sell_price]
-
-        # if diff>self.params[0]:
-
-        #     self.sell(sell_price, self.limit-position)
-        # elif diff<self.params[1]:
-
-        #     self.buy(buy_price, self.limit-position)
-        # else:
-
-        threshold = 35
-
-        if signal < -threshold:
-            self.sell(sell_price, sell_vol)
-        elif signal > threshold:
-            self.buy(buy_price, - buy_vol)
-
-
-class Basket2Strat(Strategy):
-
-    def __init__(self, symbol, limit):
-        super().__init__(symbol, limit)
-        self.window = deque()
-        self.params = [40, -10]
-        self.ewm = EWM(1 / 2300)
-
-    def get_mid_price(self, order, traderObject=None):
-
-        if order.buy_orders and order.sell_orders:
-            best_bid = max(order.buy_orders.keys())
-            best_ask = min(order.sell_orders.keys())
-            return (best_bid + best_ask) / 2.0
-
-    def act(self, state, traderObject):
-
-        order_depth = state.order_depths[self.symbol]
-        position = state.position.get(self.symbol, 0)
-
-        basket = self.get_mid_price(order_depth)
-
-        cros, jams = self.get_mid_price(state.order_depths['CROISSANTS']), self.get_mid_price(
-            state.order_depths['JAMS'])
-
-        diff = basket - (4 * cros + 2 * jams)
-
-        signal = self.ewm.update(diff) - diff
-
-        # Order book for trading GIFT_BASKET
-        order_depth = state.order_depths[self.symbol]
-        if not order_depth.buy_orders or not order_depth.sell_orders:
-            return
-
-        buy_price = max(order_depth.sell_orders.keys())
-        sell_price = min(order_depth.buy_orders.keys())
-
-        buy_vol = order_depth.sell_orders[buy_price]
-        sell_vol = order_depth.buy_orders[sell_price]
-
-        # if diff>self.params[0]:
-
-        #     self.sell(sell_price, self.limit-position)
-        # elif diff<self.params[1]:
-
-        #     self.buy(buy_price, self.limit-position)
-        # else:
-
-        threshold = 35
-
-        if signal < -threshold:
-            self.sell(sell_price, sell_vol)
-        elif signal > threshold:
-            self.buy(buy_price, - buy_vol)
-
-
 class EWM:
-    def __init__(self, alpha=0.002):
-        self.alpha = alpha
-        self.value = None
-
-    def update(self, price):
+    def __init__(self,alpha=0.002):
+        self.alpha=alpha
+        self.value=None
+    def update(self,price):
         if self.value is None:
-            self.value = price
+            self.value = price 
         else:
             self.value = self.alpha * price + (1 - self.alpha) * self.value
         return self.value
-
-
+    
 class EWMAbs:
-    def __init__(self, price_alpha=0.0015, dev_alpha=0.002, long_alpha=0.0001):
-        self.price_ema = EWM(alpha=price_alpha)
-        self.long_ema = EWM(alpha=long_alpha)
-        self.deviation_ema = EWM(alpha=dev_alpha)
+    def __init__(self, price_alpha=0.0015, dev_alpha=0.002,long_alpha=0.0001):
+        self.price_ema = EWM(alpha=price_alpha) 
+        self.long_ema=EWM(alpha=long_alpha)
+        self.deviation_ema = EWM(alpha=dev_alpha) 
 
     def update(self, price):
+
         ema_price = self.price_ema.update(price)
-        long_ema = self.long_ema.update(price)
+        long_ema=self.long_ema.update(price)
+
 
         abs_deviation = abs(price - ema_price)
 
         ema_abs_deviation = self.deviation_ema.update(abs_deviation)
 
-        return ema_price, ema_abs_deviation, long_ema
+        return ema_price, ema_abs_deviation,long_ema
 
-class arb:
-    def __init__(self):
-        pass
-    def spot(self, state, tradingObject) -> bool:
-        pass
+
+class InkStrategy(MeanReversion):
+    def __init__(self, symbol, limit,t=0.4,alpha1=0.2,alpha2=0.25,alpha3=0.01):
+        super().__init__(symbol, limit)
+        self.emv=EWMAbs(alpha1,alpha2,alpha3)
+        self.threshold=t
+        self.price_history = []
+        self.resin_history = []
+        self.lambda_ = 0.94  # Decay factor for EWMA risk-free rate estimation
+        self.window_size = 25
+
+    def store_price_data(self, squid_ink_price, resin_price):
+        if squid_ink_price is not None:
+            self.price_history.append(squid_ink_price)
+        if resin_price is not None:
+            self.resin_history.append(resin_price)
+
+        self.price_history = self.price_history[-self.window_size:]
+        self.resin_history = self.resin_history[-self.window_size:]
+
+    def calculate_realized_volatility(self, prices):
+        if len(prices) < 2:
+            return 0
+        log_returns = np.log(np.array(prices[1:]) / np.array(prices[:-1]))
+        return np.sqrt(np.sum(log_returns**2))  # Intraday realized volatility
+
+    def estimate_risk_free_rate(self):
+        if len(self.resin_history) < 2:
+            return 0
+        log_returns = np.log(np.array(self.resin_history[1:]) / np.array(self.resin_history[:-1]))
+        ewma_r = np.mean(log_returns) * self.window_size  # Annualized, but could be shorter term
+        return ewma_r * self.lambda_ + (1 - self.lambda_) * log_returns[-1]
+
+    def estimate_time_to_maturity(self):
+        trading_intervals = min(len(self.price_history), self.window_size)
+        return 1 / trading_intervals if trading_intervals > 0 else 1 / self.window_size
+
+    def get_fair_price(self, order: OrderDepth, traderObject):
+        est_price, dev, long = self.emv.update(self.get_mid_price(order,traderObject))
+        if not order.sell_orders or not order.buy_orders:
+            return est_price, dev, long
+
+        best_ask = min(order.sell_orders.keys())
+        best_bid = max(order.buy_orders.keys())
+        mid_price = (best_ask + best_bid) / 2
+
+        vol = self.calculate_realized_volatility(self.price_history)
+        r = self.estimate_risk_free_rate()
+        T = self.estimate_time_to_maturity()
+
+        expected_price = mid_price * np.exp(r * T + 0.5 * vol**2 * T)
+
+        self.store_price_data(mid_price, traderObject.get("RAINFOREST_RESIN_last_price", None))
+        return expected_price, dev, long
+
+    def get_mid_price(self, order, traderObject):
+        if order.buy_orders and order.sell_orders:
+            best_bid = max(order.buy_orders.keys())
+            best_ask = min(order.sell_orders.keys())
+            return (best_bid + best_ask) / 2.0
+        else:
+            # Fallback or default, if one side of the order book is missing
+            return None 
+        
+    def act(self,state,traderObject):
+        buy_volume=0
+        sell_volume=0
+        order_depth = state.order_depths[self.symbol]
+
+        
+        fair ,dev,long= self.get_fair_price(order_depth, traderObject)
+
+        # get and sort each side of the order book #
+        order_depth = state.order_depths[self.symbol]
+        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
+        sell_orders = sorted(order_depth.sell_orders.items())
+
+        # get current position and set current position limits #
+        position = state.position.get(self.symbol, 0)
+
+        sell_orders=order_depth.sell_orders
+        buy_orders=order_depth.buy_orders
+        try:
+            best_ask_fair = min([p for p in sell_orders.keys() if p > fair+dev*self.threshold])
+        except ValueError:
+            best_ask_fair = fair+dev*self.threshold
+            
+        try:
+            best_bid_fair = max([p for p in buy_orders.keys() if p < fair-dev*self.threshold])
+        except ValueError:
+            best_bid_fair = fair-dev*self.threshold
+
+        buy_quant=position_limit-(position+buy_volume)
+        if long-dev*self.threshold>fair and buy_quant>0:
+            self.buy(best_bid_fair-dev*self.threshold,buy_quant)
+
+
+        sell_quant=position_limit+(position-sell_volume)
+        if long+dev*self.threshold<fair and sell_quant>0:
+            self.sell(best_ask_fair+dev*self.threshold,sell_quant)
+
+    def save(self) -> JSON:
+        return {
+            "price_history": self.price_history,
+            "resin_history": self.resin_history
+        }
+
+    def load(self, data: JSON) -> None:
+        self.price_history = list(data.get("price_history", []))
+        self.resin_history = list(data.get("resin_history", []))
+        
 
 
 class Trader:
     def __init__(self) -> None:
-        self.strategies = {}
-        self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, LIMITS[symbol]) for symbol, clazz in {
-            "KELP": KelpStrategy,
+        limits = {
+            "KELP": 50,
+            "RAINFOREST_RESIN": 50,
+            "SQUID_INK":50
+        }
+        self.strategies={}
+        self.strategies: dict[Symbol, Strategy] = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
+        "KELP": KelpStrategy,
             "RAINFOREST_RESIN": ResinStrategy,
-            "SQUID_INK": SquidInkStrategy,
-            # "DJEMBES":JamStrategy,
-            "PICNIC_BASKET1": Basket1Strat,
-            "PICNIC_BASKET2": Basket2Strat
+            "SQUID_INK":InkStrategy
+            
         }.items()}
-
+        
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
-        jam_strat = JamStrategy('JAMS', LIMITS['JAMS'])
         orders = {}
         conversions = 0
 
         old_trader_data = json.loads(state.traderData) if state.traderData != "" else {}
         new_trader_data = {}
-        for symbol, strategy in [("JAMS", jam_strat)]:
-            if symbol in old_trader_data:
-                strategy.load(old_trader_data[symbol])
-
-            if (symbol in state.order_depths and
-                    len(state.order_depths[symbol].buy_orders) > 0 and
-                    len(state.order_depths[symbol].sell_orders) > 0
-            ):
-                (strategy_orders, strategy_conversions), t1, t2 = strategy.run(state,
-                                                                               traderObject=old_trader_data.get(symbol,
-                                                                                                                {}), )
-
-                orders[symbol] = strategy_orders
-                orders["PICNIC_BASKET1"] = t1
-                orders["PICNIC_BASKET2"] = t2
-                conversions += sum(strategy_conversions)
-
-            new_trader_data[symbol] = strategy.save()
 
         for symbol, strategy in self.strategies.items():
             if symbol in old_trader_data:
@@ -816,3 +615,4 @@ class Trader:
 
         logger.flush(state, orders, conversions, trader_data)
         return orders, conversions, trader_data
+    
